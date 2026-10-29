@@ -12,18 +12,6 @@ impl Size {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Point {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl Point {
-    pub const fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-}
-
 /// An axis-aligned rectangle: `x`, `y` is the top-left corner.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -41,14 +29,5 @@ impl Rect {
             width,
             height,
         }
-    }
-
-    /// Whether `point` lies inside, counting the top and left edges but not the bottom and right,
-    /// so that a point on a shared edge belongs to exactly one of two touching rectangles.
-    pub fn contains(&self, point: Point) -> bool {
-        point.x >= self.x
-            && point.x < self.x + self.width
-            && point.y >= self.y
-            && point.y < self.y + self.height
     }
 }

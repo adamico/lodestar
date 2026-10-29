@@ -7,7 +7,7 @@ use gpui_kit::component::sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMe
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lodestar_core::geometry::Size;
+use lodestar_core::geometry::{Rect, Size};
 use lodestar_core::session::{SessionStatus, SessionStore};
 use lodestar_core::window::{PaneId, WindowModel};
 
@@ -17,15 +17,15 @@ const PANE_HEADER_HEIGHT: Pixels = px(30.);
 const ACCENT: u32 = 0x3b82f6;
 const UNFOCUSED_OPACITY: f32 = 0.6;
 
-pub struct Workspace {
-    model: WindowModel,
+pub struct MainWindow {
+    window_model: WindowModel,
     sessions: SessionStore,
 }
 
-impl Workspace {
+impl MainWindow {
     pub fn new(sessions: SessionStore) -> Self {
         Self {
-            model: WindowModel::new(),
+            window_model: WindowModel::new(),
             sessions,
         }
     }
@@ -57,30 +57,25 @@ impl Workspace {
             f32::from(viewport.width - SIDEBAR_WIDTH).max(0.),
             f32::from(viewport.height),
         );
-        let layout = self.model.layout(area);
-        let focused = self.model.focused_pane();
+        let layout = self.window_model.layout(area);
+        let focused = self.window_model.focused_pane();
 
         div()
             .relative()
             .flex_1()
             .h_full()
             .overflow_hidden()
-            .children(layout.dividers.iter().map(|divider| {
-                div()
-                    .absolute()
-                    .left(px(divider.rect.x))
-                    .top(px(divider.rect.y))
-                    .w(px(divider.rect.width))
-                    .h(px(divider.rect.height))
-                    .bg(cx.theme().border)
-            }))
+            .children(
+                layout
+                    .dividers
+                    .iter()
+                    .map(|divider| place(div().bg(cx.theme().border), divider.rect)),
+            )
             .children(layout.panes.iter().map(|pane| {
-                self.render_pane(pane.pane, pane.pane == focused, cx)
-                    .absolute()
-                    .left(px(pane.rect.x))
-                    .top(px(pane.rect.y))
-                    .w(px(pane.rect.width))
-                    .h(px(pane.rect.height))
+                place(
+                    self.render_pane(pane.pane, pane.pane == focused, cx),
+                    pane.rect,
+                )
             }))
     }
 
@@ -92,7 +87,7 @@ impl Workspace {
             (theme.border, theme.secondary, theme.muted_foreground)
         };
         let title = match self
-            .model
+            .window_model
             .session_in(pane)
             .and_then(|id| self.sessions.session(id))
         {
@@ -108,7 +103,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.model.focus(pane);
+                    this.window_model.focus(pane);
                     cx.notify();
                 }),
             )
@@ -126,7 +121,7 @@ impl Workspace {
     }
 }
 
-impl Render for Workspace {
+impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .size_full()
@@ -147,4 +142,14 @@ fn status_color(status: SessionStatus, cx: &App) -> Hsla {
 
 fn status_dot(color: Hsla) -> impl IntoElement {
     div().size_2().rounded_full().bg(color)
+}
+
+/// Position `element` at `rect`, relative to the pane area.
+fn place(element: Div, rect: Rect) -> Div {
+    element
+        .absolute()
+        .left(px(rect.x))
+        .top(px(rect.y))
+        .w(px(rect.width))
+        .h(px(rect.height))
 }

@@ -1,12 +1,12 @@
 mod fixtures;
-mod workspace;
+mod main_window;
 
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 use lodestar_core::session::SessionStore;
 
 use crate::fixtures::FixtureSource;
-use crate::workspace::Workspace;
+use crate::main_window::MainWindow;
 
 fn main() {
     gpui_kit::application().run(|cx| {
@@ -19,7 +19,7 @@ fn main() {
             app_id: Some("lodestar".into()),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| Workspace::new(sessions)))
+        gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| MainWindow::new(sessions)))
             .expect("failed to open the Lodestar window");
         cx.activate(true);
     });
