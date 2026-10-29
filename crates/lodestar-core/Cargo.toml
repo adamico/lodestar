@@ -1,0 +1,9 @@
+[package]
+name = "lodestar-core"
+description = "Lodestar's window model and sessions, in plain Rust with no GPUI dependency."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Keep this crate free of GPUI, so every layout and session rule is testable without a window.
+[dependencies]

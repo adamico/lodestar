@@ -1,0 +1,15 @@
+{
+  "projects": [
+    { "name": "lodestar", "path": "~/code/lodestar" },
+    { "name": "pixel-forge", "path": "~/code/pixel-forge" },
+    { "name": "dotfiles", "path": "~/dotfiles" }
+  ],
+  "sessions": [
+    { "title": "Pane tree and layout", "project": "lodestar", "status": "running", "started_at": 1793270400 },
+    { "title": "CI on Ubuntu", "project": "lodestar", "status": "done", "started_at": 1793263200 },
+    { "title": "Sprite batching", "project": "pixel-forge", "status": "waiting_for_input", "started_at": 1793268000 },
+    { "title": "Tilemap collisions", "project": "pixel-forge", "status": "running", "started_at": 1793266200 },
+    { "title": "Port Love2D input layer", "project": "pixel-forge", "status": "done", "started_at": 1793180000 },
+    { "title": "Hyprland keybinds", "project": "dotfiles", "status": "waiting_for_input", "started_at": 1793259600 }
+  ]
+}
