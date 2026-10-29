@@ -20,6 +20,10 @@ _Avoid_: Conversation, log, chat history
 A tile in the window that shows at most one session. An empty pane offers to open an existing session or start a new one. Closing a pane hides its session; it does not end it.
 _Avoid_: Tile, view, split
 
+**Project**:
+The folder a session works in, whether or not it is a git repository. A project can have many sessions.
+_Avoid_: Workspace, repo, working directory, folder
+
 **Session status**:
 Where a session stands right now: running, waiting for input, or done.
 _Avoid_: State
