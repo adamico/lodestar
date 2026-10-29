@@ -17,7 +17,7 @@ The ordered messages and tool calls that make up a session's history.
 _Avoid_: Conversation, log, chat history
 
 **Pane**:
-A tile in the window that shows exactly one session. Never empty. Closing a pane hides the session; it does not end it.
+A tile in the window that shows at most one session. An empty pane offers to open an existing session or start a new one. Closing a pane hides its session; it does not end it.
 _Avoid_: Tile, view, split
 
 **Session status**:
