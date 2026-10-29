@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use lodestar_core::session::{
     InitialSessions, Project, ProjectId, Session, SessionId, SessionSource, SessionStatus,
+    ToolCall, Transcript, TranscriptEntry,
 };
 use serde::Deserialize;
 
@@ -38,6 +39,38 @@ struct FixtureSession {
     project: String,
     status: FixtureStatus,
     started_at: u64,
+    #[serde(default)]
+    transcript: Vec<FixtureEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FixtureEntry {
+    User(String),
+    Assistant(String),
+    ToolCall {
+        summary: String,
+        input: String,
+        output: String,
+    },
+}
+
+impl From<FixtureEntry> for TranscriptEntry {
+    fn from(entry: FixtureEntry) -> Self {
+        match entry {
+            FixtureEntry::User(text) => TranscriptEntry::User(text),
+            FixtureEntry::Assistant(text) => TranscriptEntry::Assistant(text),
+            FixtureEntry::ToolCall {
+                summary,
+                input,
+                output,
+            } => TranscriptEntry::ToolCall(ToolCall {
+                summary,
+                input,
+                output,
+            }),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -79,6 +112,9 @@ impl FixtureFile {
                         FixtureStatus::Done => SessionStatus::Done,
                     },
                     started_at: session.started_at,
+                    transcript: Transcript {
+                        entries: session.transcript.into_iter().map(Into::into).collect(),
+                    },
                 }
             })
             .collect();
