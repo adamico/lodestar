@@ -47,7 +47,7 @@ struct FixtureSession {
 #[serde(rename_all = "snake_case")]
 enum FixtureEntry {
     User(String),
-    Assistant(String),
+    Agent(String),
     ToolCall {
         summary: String,
         input: String,
@@ -59,7 +59,7 @@ impl From<FixtureEntry> for TranscriptEntry {
     fn from(entry: FixtureEntry) -> Self {
         match entry {
             FixtureEntry::User(text) => TranscriptEntry::User(text),
-            FixtureEntry::Assistant(text) => TranscriptEntry::Assistant(text),
+            FixtureEntry::Agent(text) => TranscriptEntry::Agent(text),
             FixtureEntry::ToolCall {
                 summary,
                 input,

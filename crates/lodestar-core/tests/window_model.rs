@@ -58,8 +58,10 @@ fn panes(model: &WindowModel) -> Vec<PaneId> {
     model.layout(AREA).panes.iter().map(|p| p.pane).collect()
 }
 
-/// A session is in at most one pane. Checked after every command in these tests.
-fn assert_each_session_in_at_most_one_pane(model: &WindowModel) {
+/// Run one window-model command, then check that no session is shown in two panes.
+/// Tests send every command through here, so the invariant holds after each one.
+fn run(model: &mut WindowModel, command: impl FnOnce(&mut WindowModel)) {
+    command(model);
     let mut shown: Vec<SessionId> = panes(model)
         .into_iter()
         .filter_map(|pane| model.session_in(pane))
@@ -77,25 +79,40 @@ fn opening_a_session_fills_the_empty_focused_pane() {
         panic!()
     };
 
-    model.open_session(SessionId(7), model.focused_pane());
-    assert_each_session_in_at_most_one_pane(&model);
+    run(&mut model, |m| m.open_session(SessionId(7), left));
 
     assert_eq!(model.session_in(left), Some(SessionId(7)));
     assert_eq!(model.session_in(right), None);
     assert_eq!(model.pane_showing(SessionId(7)), Some(left));
+    assert_eq!(model.focused_pane(), left);
 }
 
 #[test]
 fn opening_a_session_replaces_the_focused_panes_session() {
     let mut model = WindowModel::new();
     let left = model.focused_pane();
-    model.open_session(SessionId(1), left);
+    run(&mut model, |m| m.open_session(SessionId(1), left));
 
-    model.open_session(SessionId(2), left);
-    assert_each_session_in_at_most_one_pane(&model);
+    run(&mut model, |m| m.open_session(SessionId(2), left));
 
     assert_eq!(model.session_in(left), Some(SessionId(2)));
     assert_eq!(model.pane_showing(SessionId(1)), None);
+}
+
+#[test]
+fn opening_a_session_in_the_right_pane_leaves_the_left_one_alone() {
+    let mut model = WindowModel::new();
+    let [left, right] = panes(&model)[..] else {
+        panic!()
+    };
+    run(&mut model, |m| m.open_session(SessionId(1), left));
+    run(&mut model, |m| m.focus(right));
+
+    run(&mut model, |m| m.open_session(SessionId(2), right));
+
+    assert_eq!(model.session_in(left), Some(SessionId(1)));
+    assert_eq!(model.session_in(right), Some(SessionId(2)));
+    assert_eq!(model.focused_pane(), right);
 }
 
 #[test]
@@ -104,12 +121,11 @@ fn opening_a_shown_session_focuses_its_pane_instead() {
     let [left, right] = panes(&model)[..] else {
         panic!()
     };
-    model.open_session(SessionId(1), left);
-    model.focus(right);
-    model.open_session(SessionId(2), right);
+    run(&mut model, |m| m.open_session(SessionId(1), left));
+    run(&mut model, |m| m.focus(right));
+    run(&mut model, |m| m.open_session(SessionId(2), right));
 
-    model.open_session(SessionId(1), right);
-    assert_each_session_in_at_most_one_pane(&model);
+    run(&mut model, |m| m.open_session(SessionId(1), right));
 
     assert_eq!(model.focused_pane(), left);
     assert_eq!(model.session_in(left), Some(SessionId(1)));

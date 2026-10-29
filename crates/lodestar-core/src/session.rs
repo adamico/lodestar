@@ -47,8 +47,8 @@ pub struct Transcript {
 pub enum TranscriptEntry {
     /// A message from the user.
     User(String),
-    /// A message from the agent, in markdown.
-    Assistant(String),
+    /// A message from the Agent, in markdown.
+    Agent(String),
     ToolCall(ToolCall),
 }
 
@@ -104,12 +104,8 @@ impl SessionStore {
         sessions
     }
 
-    /// The name of `project`, or an empty string if it is unknown.
-    pub fn project_name(&self, project: ProjectId) -> &str {
-        self.projects
-            .iter()
-            .find(|p| p.id == project)
-            .map_or("", |p| p.name.as_str())
+    pub fn project(&self, id: ProjectId) -> Option<&Project> {
+        self.projects.iter().find(|project| project.id == id)
     }
 
     pub fn session(&self, id: SessionId) -> Option<&Session> {

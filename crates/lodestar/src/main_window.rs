@@ -127,17 +127,22 @@ impl MainWindow {
             .bg(header_bg)
             .text_color(header_fg)
             .text_sm();
-        let header = match session {
-            Some(session) => header
-                .child(status_dot(status_color(session.status, cx)))
-                .child(div().truncate().child(session.title.clone()))
-                .child(
-                    div()
-                        .text_color(header_muted)
-                        .child(self.sessions.project_name(session.project).to_owned()),
+        let (header, body) =
+            match session {
+                Some(session) => (
+                    header
+                        .child(status_dot(status_color(session.status, cx)))
+                        .child(div().truncate().child(session.title.clone()))
+                        .children(self.sessions.project(session.project).map(|project| {
+                            div().text_color(header_muted).child(project.name.clone())
+                        })),
+                    render_transcript(session, cx).into_any_element(),
                 ),
-            None => header.text_color(header_muted).child("Empty"),
-        };
+                None => (
+                    header.text_color(header_muted).child("Empty"),
+                    div().flex_1().into_any_element(),
+                ),
+            };
 
         v_flex()
             .border_1()
@@ -152,10 +157,7 @@ impl MainWindow {
                 }),
             )
             .child(header)
-            .child(match session {
-                Some(session) => render_transcript(session, cx).into_any_element(),
-                None => div().flex_1().into_any_element(),
-            })
+            .child(body)
     }
 }
 
@@ -178,7 +180,7 @@ fn render_transcript(session: &Session, cx: &App) -> impl IntoElement {
                     .bg(theme.secondary)
                     .child(text.clone())
                     .into_any_element(),
-                TranscriptEntry::Assistant(text) => div().child(text.clone()).into_any_element(),
+                TranscriptEntry::Agent(text) => div().child(text.clone()).into_any_element(),
                 TranscriptEntry::ToolCall(call) => div()
                     .font_family(theme.mono_font_family.clone())
                     .text_xs()
