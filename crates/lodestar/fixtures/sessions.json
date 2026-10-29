@@ -5,11 +5,72 @@
     { "name": "dotfiles", "path": "~/dotfiles" }
   ],
   "sessions": [
-    { "title": "Pane tree and layout", "project": "lodestar", "status": "running", "started_at": 1793270400 },
-    { "title": "CI on Ubuntu", "project": "lodestar", "status": "done", "started_at": 1793263200 },
-    { "title": "Sprite batching", "project": "pixel-forge", "status": "waiting_for_input", "started_at": 1793268000 },
-    { "title": "Tilemap collisions", "project": "pixel-forge", "status": "running", "started_at": 1793266200 },
-    { "title": "Port Love2D input layer", "project": "pixel-forge", "status": "done", "started_at": 1793180000 },
-    { "title": "Hyprland keybinds", "project": "dotfiles", "status": "waiting_for_input", "started_at": 1793259600 }
+    {
+      "title": "Pane tree and layout",
+      "project": "lodestar",
+      "status": "running",
+      "started_at": 1793270400,
+      "transcript": [
+        { "user": "Add a split command to the window model. Wide panes split side by side, tall ones top and bottom." },
+        { "tool_call": { "summary": "Read crates/lodestar-core/src/window.rs", "input": "crates/lodestar-core/src/window.rs", "output": "pub struct WindowModel { root: Node, ... }" } },
+        { "agent": "The pane tree is a binary tree of `Split` nodes, so a split replaces one leaf with a new `Split`. I'll pick the axis from the pane's rectangle:\n\n```rust\nlet axis = if rect.width > rect.height { Axis::Horizontal } else { Axis::Vertical };\n```\n\nWriting the failing test first." },
+        { "tool_call": { "summary": "Edit crates/lodestar-core/tests/window_model.rs", "input": "+fn splitting_a_wide_pane_puts_the_new_pane_on_the_right()", "output": "ok" } },
+        { "tool_call": { "summary": "Run cargo test -p lodestar-core", "input": "cargo test -p lodestar-core", "output": "test splitting_a_wide_pane_puts_the_new_pane_on_the_right ... FAILED" } }
+      ]
+    },
+    {
+      "title": "CI on Ubuntu",
+      "project": "lodestar",
+      "status": "done",
+      "started_at": 1793263200,
+      "transcript": [
+        { "user": "Set up a GitHub Actions job on Ubuntu: fmt, clippy, test and a release build." },
+        { "tool_call": { "summary": "Write .github/workflows/ci.yml", "input": "name: CI\non: [push, pull_request]", "output": "ok" } },
+        { "agent": "Done. The job installs GPUI's Linux libraries first (`libxkbcommon-x11-dev`, `libwayland-dev` and friends), then runs the four checks. Clippy treats warnings as errors." }
+      ]
+    },
+    {
+      "title": "Sprite batching",
+      "project": "pixel-forge",
+      "status": "waiting_for_input",
+      "started_at": 1793268000,
+      "transcript": [
+        { "user": "Draw calls are the bottleneck in the particle demo. Can we batch sprites by texture?" },
+        { "tool_call": { "summary": "Grep for draw_sprite", "input": "draw_sprite", "output": "src/render.rs:42\nsrc/particles.rs:88\nsrc/ui.rs:17" } },
+        { "agent": "There are three call sites, all drawing one sprite per call. Two options:\n\n1. **Sort by texture each frame**, then flush one batch per texture. Simple, but sorting costs grow with particle count.\n2. **Texture atlas**, so every sprite shares one texture and the whole frame is one batch. Faster, but the asset pipeline has to pack the atlas.\n\nWhich do you prefer?" }
+      ]
+    },
+    {
+      "title": "Tilemap collisions",
+      "project": "pixel-forge",
+      "status": "running",
+      "started_at": 1793266200,
+      "transcript": [
+        { "user": "The player clips through tile corners when moving diagonally. Fix it." },
+        { "agent": "Resolving both axes at once lets a diagonal move skip past a corner. I'll resolve X then Y separately, which is the usual fix." },
+        { "tool_call": { "summary": "Edit src/physics.rs", "input": "-resolve(pos + vel)\n+resolve_x(pos.x + vel.x)\n+resolve_y(pos.y + vel.y)", "output": "ok" } }
+      ]
+    },
+    {
+      "title": "Port Love2D input layer",
+      "project": "pixel-forge",
+      "status": "done",
+      "started_at": 1793180000,
+      "transcript": [
+        { "user": "Port the input mapping from the old Love2D prototype." },
+        { "agent": "Ported. Actions are now named (`jump`, `dash`) and bound to keys in `input.toml`, as in the Love2D version." }
+      ]
+    },
+    {
+      "title": "Hyprland keybinds",
+      "project": "dotfiles",
+      "status": "waiting_for_input",
+      "started_at": 1793259600,
+      "transcript": [
+        { "user": "Add a submap for resizing windows with hjkl." },
+        { "tool_call": { "summary": "Read hypr/hyprland.conf", "input": "hypr/hyprland.conf", "output": "bind = SUPER, R, submap, resize" } },
+        { "agent": "You already have a `resize` submap bound to `SUPER+R`, but it uses the arrow keys. Should I replace the arrows with `hjkl`, or add `hjkl` alongside them?" }
+      ]
+    }
   ]
 }

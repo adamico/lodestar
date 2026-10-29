@@ -166,6 +166,29 @@ impl WindowModel {
         self.panes.get(&pane).copied().flatten()
     }
 
+    /// The pane showing `session`, if any.
+    pub fn pane_showing(&self, session: SessionId) -> Option<PaneId> {
+        self.panes
+            .iter()
+            .find(|(_, shown)| **shown == Some(session))
+            .map(|(pane, _)| *pane)
+    }
+
+    /// Show `session` in `pane`, as a sidebar click does with the focused pane.
+    ///
+    /// If `session` is already shown somewhere, that pane is focused instead and nothing moves,
+    /// so a session is never in two panes. Otherwise it fills `pane` if empty, or replaces its
+    /// session, which becomes not shown.
+    pub fn open_session(&mut self, session: SessionId, pane: PaneId) {
+        if let Some(showing) = self.pane_showing(session) {
+            self.focused = showing;
+            return;
+        }
+        if let Some(shown) = self.panes.get_mut(&pane) {
+            *shown = Some(session);
+        }
+    }
+
     fn new_pane(&mut self) -> PaneId {
         let pane = PaneId(self.next_pane_id);
         self.next_pane_id += 1;

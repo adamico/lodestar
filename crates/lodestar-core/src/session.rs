@@ -34,6 +34,30 @@ pub struct Session {
     pub status: SessionStatus,
     /// Seconds since the Unix epoch. Orders sessions newest first.
     pub started_at: u64,
+    pub transcript: Transcript,
+}
+
+/// The ordered messages and tool calls that make up a session's history.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Transcript {
+    pub entries: Vec<TranscriptEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TranscriptEntry {
+    /// A message from the user.
+    User(String),
+    /// A message from the Agent, in markdown.
+    Agent(String),
+    ToolCall(ToolCall),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCall {
+    /// One line saying what the call did, e.g. `Read src/main.rs`.
+    pub summary: String,
+    pub input: String,
+    pub output: String,
 }
 
 /// What a session source supplies at startup.
@@ -78,6 +102,10 @@ impl SessionStore {
             .collect();
         sessions.sort_by_key(|session| std::cmp::Reverse(session.started_at));
         sessions
+    }
+
+    pub fn project(&self, id: ProjectId) -> Option<&Project> {
+        self.projects.iter().find(|project| project.id == id)
     }
 
     pub fn session(&self, id: SessionId) -> Option<&Session> {
