@@ -128,4 +128,48 @@ mod open_session {
         assert_eq!(model.focused_pane(), left);
         assert_eq!(model.sessions_shown(), vec![SessionId(1)]);
     }
+
+    /// Every session appears in at most one pane, judged only through what the model reports.
+    fn assert_one_pane_per_session(model: &WindowModel) {
+        for session in model.sessions_shown() {
+            let panes_showing = panes(model)
+                .into_iter()
+                .filter(|pane| model.session_in(*pane) == Some(session))
+                .count();
+            assert_eq!(
+                panes_showing, 1,
+                "{session:?} is shown in {panes_showing} panes"
+            );
+            assert_eq!(
+                model.pane_showing(session).map(|p| model.session_in(p)),
+                Some(Some(session))
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_is_in_at_most_one_pane_after_every_command() {
+        let mut model = WindowModel::new();
+        let [left, right] = panes(&model)[..] else {
+            unreachable!()
+        };
+        let commands: Vec<Box<dyn Fn(&mut WindowModel)>> = vec![
+            Box::new(move |m| m.open_session(SessionId(1), left)),
+            Box::new(move |m| m.focus(right)),
+            Box::new(move |m| m.open_session(SessionId(2), right)),
+            Box::new(move |m| m.open_session(SessionId(1), right)),
+            Box::new(move |m| m.open_session(SessionId(2), left)),
+            Box::new(move |m| m.open_session(SessionId(3), left)),
+            Box::new(move |m| m.open_session(SessionId(2), left)),
+            Box::new(move |m| m.open_session(SessionId(3), right)),
+            Box::new(move |m| m.focus(left)),
+            Box::new(move |m| m.open_session(SessionId(3), left)),
+        ];
+
+        assert_one_pane_per_session(&model);
+        for command in commands {
+            command(&mut model);
+            assert_one_pane_per_session(&model);
+        }
+    }
 }
