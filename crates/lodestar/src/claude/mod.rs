@@ -459,4 +459,29 @@ mod tests {
             }]
         );
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_whose_child_keeps_its_output_open_still_ends_the_session_when_it_exits() {
+        let holder = fake_dir("holder").join("pid");
+        let project = fake_claude_doing(
+            "holder",
+            &format!("sleep 30 &\necho $! > '{}'\nexit 2\n", holder.display()),
+        );
+        let mut source = fake_source();
+
+        source.start_agent(SessionId(3), &project).unwrap();
+        let updates = poll_until_done(&mut source);
+
+        if let Ok(pid) = fs::read_to_string(&holder) {
+            let _ = std::process::Command::new("kill").arg(pid.trim()).status();
+        }
+        assert_eq!(
+            updates,
+            [SessionUpdate::Ended {
+                session: SessionId(3),
+                error: "claude exited (code 2).".into()
+            }]
+        );
+    }
 }

@@ -30,11 +30,12 @@ fn main() {
         transcript_view::bind_keys(cx);
         leader::init(cx);
 
-        let mut source: Box<dyn SessionSource> = if fixtures_wanted(std::env::var_os(FIXTURES_VAR).as_deref()) {
-            Box::new(FixtureSource::new())
-        } else {
-            Box::new(ClaudeSource::from_env())
-        };
+        let mut source: Box<dyn SessionSource> =
+            if fixtures_wanted(std::env::var_os(FIXTURES_VAR).as_deref()) {
+                Box::new(FixtureSource::new())
+            } else {
+                Box::new(ClaudeSource::from_env())
+            };
         let sessions = SessionStore::load(source.as_mut());
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),

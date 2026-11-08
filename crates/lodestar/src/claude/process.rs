@@ -6,6 +6,7 @@ use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::time::{Duration, Instant};
 
 use lodestar_core::session::SessionId;
 
@@ -25,6 +26,10 @@ const ARGS: [&str; 8] = [
 
 /// How many characters of stderr an [`AgentExit`] keeps: the end, where the reason is.
 const STDERR_TAIL_CHARS: usize = 2000;
+
+/// How long an exited process's pipes get to close before its exit is reported anyway. A
+/// child it left behind can hold them open for as long as it likes.
+const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// What [`Agent::drain`] hands out: a stdout line, or the news that the process is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +63,7 @@ impl AgentExit {
 }
 
 /// What the reader threads send down the one channel.
-enum Raw {
+enum PipeMessage {
     Stdout(String),
     Stderr(String),
     StdoutClosed,
@@ -70,13 +75,13 @@ pub struct Agent {
     child: Child,
     /// Taken (closed) to tell Claude Code there is nothing more to say.
     stdin: Option<ChildStdin>,
-    raw: Receiver<Raw>,
+    pipes: Receiver<PipeMessage>,
     /// The last [`STDERR_TAIL_CHARS`] of stderr so far.
     stderr: String,
     stdout_closed: bool,
     stderr_closed: bool,
-    /// The status once the process was reaped, until it is reported.
-    exit_status: Option<ExitStatus>,
+    /// The status once the process was reaped, and when that was.
+    exit_status: Option<(ExitStatus, Instant)>,
     /// Whether [`AgentEvent::Exited`] was handed out already; it is handed out once.
     exit_reported: bool,
 }
@@ -95,18 +100,33 @@ impl Agent {
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().expect("stdout was piped");
         let stderr = child.stderr.take().expect("stderr was piped");
-        let (tx, raw) = mpsc::channel();
+        let (tx, pipes) = mpsc::channel();
         let tx_err = tx.clone();
-        std::thread::Builder::new()
+        let readers = std::thread::Builder::new()
             .name(format!("claude-stdout-{}", session.0))
-            .spawn(move || read_lines(stdout, tx, Raw::Stdout, Raw::StdoutClosed))?;
-        std::thread::Builder::new()
-            .name(format!("claude-stderr-{}", session.0))
-            .spawn(move || read_lines(stderr, tx_err, Raw::Stderr, Raw::StderrClosed))?;
+            .spawn(move || read_lines(stdout, tx, PipeMessage::Stdout, PipeMessage::StdoutClosed))
+            .and_then(|_| {
+                std::thread::Builder::new()
+                    .name(format!("claude-stderr-{}", session.0))
+                    .spawn(move || {
+                        read_lines(
+                            stderr,
+                            tx_err,
+                            PipeMessage::Stderr,
+                            PipeMessage::StderrClosed,
+                        )
+                    })
+            });
+        if let Err(error) = readers {
+            // Nobody would read the process, so it must not outlive this call.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         Ok(Self {
             child,
             stdin,
-            raw,
+            pipes,
             stderr: String::new(),
             stdout_closed: false,
             stderr_closed: false,
@@ -132,28 +152,30 @@ impl Agent {
     }
 
     /// Every event that arrived since the last call, in order. The process's exit is the
-    /// last event, reported once, after its stdout closed and it was reaped; its stderr gets
-    /// until then (or the following call) to arrive.
+    /// last event, reported once, after it was reaped and its stdout and stderr closed, so
+    /// every line it wrote comes first. Should a child it left behind keep them open, the
+    /// exit is reported [`EXIT_GRACE`] after the reaping all the same.
     pub fn drain(&mut self) -> Vec<AgentEvent> {
         let mut events = Vec::new();
         loop {
-            match self.raw.try_recv() {
-                Ok(Raw::Stdout(line)) => events.push(AgentEvent::Line(line)),
-                Ok(Raw::Stderr(line)) => self.keep_stderr(&line),
-                Ok(Raw::StdoutClosed) => self.stdout_closed = true,
-                Ok(Raw::StderrClosed) => self.stderr_closed = true,
+            match self.pipes.try_recv() {
+                Ok(PipeMessage::Stdout(line)) => events.push(AgentEvent::Line(line)),
+                Ok(PipeMessage::Stderr(line)) => self.keep_stderr(&line),
+                Ok(PipeMessage::StdoutClosed) => self.stdout_closed = true,
+                Ok(PipeMessage::StderrClosed) => self.stderr_closed = true,
                 Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
             }
         }
         if self.exit_reported {
             return events;
         }
-        let reaped_earlier = self.exit_status.is_some();
-        if self.stdout_closed && self.exit_status.is_none() {
-            self.exit_status = self.child.try_wait().ok().flatten();
+        if self.exit_status.is_none()
+            && let Ok(Some(status)) = self.child.try_wait()
+        {
+            self.exit_status = Some((status, Instant::now()));
         }
-        if let Some(status) = self.exit_status
-            && (self.stderr_closed || reaped_earlier)
+        if let Some((status, reaped_at)) = self.exit_status
+            && ((self.stdout_closed && self.stderr_closed) || reaped_at.elapsed() >= EXIT_GRACE)
         {
             self.exit_reported = true;
             events.push(AgentEvent::Exited(AgentExit::new(status, &self.stderr)));
@@ -189,12 +211,17 @@ impl Drop for Agent {
     }
 }
 
-/// A reader thread: `line` for every line of `pipe`, then `closed`. Stops early once nobody
-/// listens any more.
-fn read_lines(pipe: impl io::Read, tx: Sender<Raw>, line: impl Fn(String) -> Raw, closed: Raw) {
-    for read in BufReader::new(pipe).lines() {
-        let Ok(read) = read else { break };
-        if tx.send(line(read)).is_err() {
+/// A reader thread: every line of `pipe`, wrapped by `wrap`, then `closed`. Stops early once
+/// nobody listens any more.
+fn read_lines(
+    pipe: impl io::Read,
+    tx: Sender<PipeMessage>,
+    wrap: impl Fn(String) -> PipeMessage,
+    closed: PipeMessage,
+) {
+    for line in BufReader::new(pipe).lines() {
+        let Ok(line) = line else { break };
+        if tx.send(wrap(line)).is_err() {
             return;
         }
     }
