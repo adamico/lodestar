@@ -1,4 +1,4 @@
-//! One headless Claude Code process: spawned in its Project folder, written to as JSON
+//! One headless Claude Code process: spawned in its Project, written to as JSON
 //! lines, read by two threads (stdout and stderr) that hand every line down a channel.
 
 use std::ffi::OsStr;

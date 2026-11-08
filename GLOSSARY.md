@@ -28,6 +28,14 @@ _Avoid_: Workspace, repo, working directory, folder
 Where a session stands right now: running, waiting for input, or done.
 _Avoid_: State
 
+**Turn**:
+One message from the user and the Agent's work on it, up to its result. A session waits for input between turns.
+_Avoid_: Exchange, round, request
+
+**Error item**:
+The Transcript item that explains why a turn failed or why the session ended.
+_Avoid_: Error message, failure entry, crash note
+
 **Pending tool call**:
 A tool call in a Transcript whose result has not arrived yet. It is shown collapsed with a pending marker.
 _Avoid_: In-flight call, running tool, incomplete tool call

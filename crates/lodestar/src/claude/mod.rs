@@ -99,7 +99,7 @@ impl SessionSource for ClaudeSource {
     fn start_agent(&mut self, session: SessionId, project: &Project) -> Result<(), String> {
         if !project.path.is_dir() {
             return Err(format!(
-                "The Project folder {} does not exist.",
+                "The Project {} no longer exists on disk.",
                 project.path.display()
             ));
         }
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_cannot_start_in_a_folder_that_does_not_exist() {
+    fn an_agent_cannot_start_in_a_project_that_no_longer_exists_on_disk() {
         let project = Project {
             id: ProjectId(0),
             name: "gone".into(),
@@ -386,7 +386,10 @@ mod tests {
 
         let started = source.start_agent(SessionId(3), &project);
 
-        assert!(started.is_err());
+        assert_eq!(
+            started.unwrap_err(),
+            "The Project /nonexistent/lodestar/project no longer exists on disk."
+        );
         assert!(source.poll_updates(Duration::ZERO).is_empty());
     }
 
