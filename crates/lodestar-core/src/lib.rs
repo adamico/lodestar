@@ -5,4 +5,5 @@
 
 pub mod geometry;
 pub mod session;
+pub mod sidebar;
 pub mod window;

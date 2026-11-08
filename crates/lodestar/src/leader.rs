@@ -44,6 +44,8 @@ pub enum LeaderCommand {
     Focus(Direction),
     /// Leader + `H`/`J`/`K`/`L`.
     Swap(Direction),
+    FocusSidebar,
+    ToggleSidebar,
 }
 
 impl LeaderCommand {
@@ -61,6 +63,8 @@ impl LeaderCommand {
         ("J", "swap down", LeaderCommand::Swap(Direction::Down)),
         ("K", "swap up", LeaderCommand::Swap(Direction::Up)),
         ("L", "swap right", LeaderCommand::Swap(Direction::Right)),
+        ("b", "focus sidebar", LeaderCommand::FocusSidebar),
+        ("B", "toggle sidebar", LeaderCommand::ToggleSidebar),
     ];
 
     /// The command for a keystroke pressed after the leader, if it is one.
@@ -82,6 +86,8 @@ impl LeaderCommand {
             ("j", true) => Some(Self::Swap(Direction::Down)),
             ("k", true) => Some(Self::Swap(Direction::Up)),
             ("l", true) => Some(Self::Swap(Direction::Right)),
+            ("b", false) => Some(Self::FocusSidebar),
+            ("b", true) => Some(Self::ToggleSidebar),
             _ => None,
         }
     }
