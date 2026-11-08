@@ -38,14 +38,16 @@ The workspace has two crates:
 
 ### Milestone 1: UI mockup with fake data
 
-- [ ] GPUI window with a sidebar listing agent sessions
-- [ ] Tiling panes you can split, close and resize
-- [ ] Keyboard shortcuts to move between panes and sessions
-- [ ] Each pane shows a fake agent conversation
+- [x] GPUI window with a sidebar listing agent sessions
+- [x] Tiling panes you can split, close and resize
+- [x] Keyboard shortcuts to move between panes and sessions
+- [x] Each pane shows a fake agent conversation
 
-Tip: study Zed's `workspace` and `pane` crates as a reference.
+Tip: Zed's `workspace` and `pane` crates are worth studying, but don't copy them: they're GPL (ADR 0001).
 
 ### Milestone 2: Real agents
+
+Spec: #18
 
 - [ ] Spawn Claude Code sessions and stream their output into panes
 - [ ] Send instructions to an agent from its pane
