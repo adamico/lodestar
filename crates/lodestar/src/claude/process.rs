@@ -1,10 +1,10 @@
 //! One headless Claude Code process: spawned in its Project folder, written to as JSON
-//! lines, read by a thread that hands every stdout line down a channel.
+//! lines, read by two threads (stdout and stderr) that hand every line down a channel.
 
 use std::ffi::OsStr;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use lodestar_core::session::SessionId;
@@ -23,20 +23,62 @@ const ARGS: [&str; 8] = [
     "acceptEdits",
 ];
 
-/// What the reader thread sends: a stdout line, or the news that there will be no more.
+/// How many characters of stderr an [`AgentExit`] keeps: the end, where the reason is.
+const STDERR_TAIL_CHARS: usize = 2000;
+
+/// What [`Agent::drain`] hands out: a stdout line, or the news that the process is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
     Line(String),
-    /// Stdout closed: the process exited or was killed. Left for the error-handling slice.
-    Exited,
+    /// The process exited or was killed. Nothing more will come from it.
+    Exited(AgentExit),
 }
 
-/// A running Claude Code process and the thread reading it. Killed when dropped.
+/// How a process ended. On Unix a process that was killed has a signal and no code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentExit {
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+    /// The tail of what the process wrote to stderr, trimmed. Empty when it wrote nothing.
+    pub stderr: String,
+}
+
+impl AgentExit {
+    fn new(status: ExitStatus, stderr: &str) -> Self {
+        #[cfg(unix)]
+        let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+        #[cfg(not(unix))]
+        let signal = None;
+        Self {
+            code: status.code(),
+            signal,
+            stderr: stderr.trim().to_owned(),
+        }
+    }
+}
+
+/// What the reader threads send down the one channel.
+enum Raw {
+    Stdout(String),
+    Stderr(String),
+    StdoutClosed,
+    StderrClosed,
+}
+
+/// A running Claude Code process and the threads reading it. Killed when dropped.
 pub struct Agent {
     child: Child,
     /// Taken (closed) to tell Claude Code there is nothing more to say.
     stdin: Option<ChildStdin>,
-    events: Receiver<AgentEvent>,
+    raw: Receiver<Raw>,
+    /// The last [`STDERR_TAIL_CHARS`] of stderr so far.
+    stderr: String,
+    stdout_closed: bool,
+    stderr_closed: bool,
+    /// The status once the process was reaped, until it is reported.
+    exit_status: Option<ExitStatus>,
+    /// Whether [`AgentEvent::Exited`] was handed out already; it is handed out once.
+    exit_reported: bool,
 }
 
 impl Agent {
@@ -47,20 +89,29 @@ impl Agent {
             .current_dir(project_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // CLI-level errors (bad flags, bad stdin) land here; leave them visible until the
-            // error-handling slice reads them into the Transcript.
-            .stderr(Stdio::inherit())
+            // CLI-level errors (bad flags, bad stdin) land here and end up in the Transcript.
+            .stderr(Stdio::piped())
             .spawn()?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().expect("stdout was piped");
-        let (tx, events) = mpsc::channel();
+        let stderr = child.stderr.take().expect("stderr was piped");
+        let (tx, raw) = mpsc::channel();
+        let tx_err = tx.clone();
         std::thread::Builder::new()
             .name(format!("claude-stdout-{}", session.0))
-            .spawn(move || read_lines(stdout, tx))?;
+            .spawn(move || read_lines(stdout, tx, Raw::Stdout, Raw::StdoutClosed))?;
+        std::thread::Builder::new()
+            .name(format!("claude-stderr-{}", session.0))
+            .spawn(move || read_lines(stderr, tx_err, Raw::Stderr, Raw::StderrClosed))?;
         Ok(Self {
             child,
             stdin,
-            events,
+            raw,
+            stderr: String::new(),
+            stdout_closed: false,
+            stderr_closed: false,
+            exit_status: None,
+            exit_reported: false,
         })
     }
 
@@ -80,14 +131,52 @@ impl Agent {
         stdin.flush()
     }
 
-    /// Every event that arrived since the last call, in order.
+    /// Every event that arrived since the last call, in order. The process's exit is the
+    /// last event, reported once, after its stdout closed and it was reaped; its stderr gets
+    /// until then (or the following call) to arrive.
     pub fn drain(&mut self) -> Vec<AgentEvent> {
         let mut events = Vec::new();
         loop {
-            match self.events.try_recv() {
-                Ok(event) => events.push(event),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return events,
+            match self.raw.try_recv() {
+                Ok(Raw::Stdout(line)) => events.push(AgentEvent::Line(line)),
+                Ok(Raw::Stderr(line)) => self.keep_stderr(&line),
+                Ok(Raw::StdoutClosed) => self.stdout_closed = true,
+                Ok(Raw::StderrClosed) => self.stderr_closed = true,
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
             }
+        }
+        if self.exit_reported {
+            return events;
+        }
+        let reaped_earlier = self.exit_status.is_some();
+        if self.stdout_closed && self.exit_status.is_none() {
+            self.exit_status = self.child.try_wait().ok().flatten();
+        }
+        if let Some(status) = self.exit_status
+            && (self.stderr_closed || reaped_earlier)
+        {
+            self.exit_reported = true;
+            events.push(AgentEvent::Exited(AgentExit::new(status, &self.stderr)));
+        }
+        events
+    }
+
+    fn keep_stderr(&mut self, line: &str) {
+        self.stderr.push_str(line);
+        self.stderr.push('\n');
+        let over = self
+            .stderr
+            .chars()
+            .count()
+            .saturating_sub(STDERR_TAIL_CHARS);
+        if over > 0 {
+            let cut = self
+                .stderr
+                .char_indices()
+                .nth(over)
+                .map(|(ix, _)| ix)
+                .unwrap_or(self.stderr.len());
+            self.stderr.drain(..cut);
         }
     }
 }
@@ -100,14 +189,14 @@ impl Drop for Agent {
     }
 }
 
-/// The reader thread: one `Line` per stdout line, then `Exited`. Stops early once nobody
+/// A reader thread: `line` for every line of `pipe`, then `closed`. Stops early once nobody
 /// listens any more.
-fn read_lines(stdout: impl io::Read, tx: Sender<AgentEvent>) {
-    for line in BufReader::new(stdout).lines() {
-        let Ok(line) = line else { break };
-        if tx.send(AgentEvent::Line(line)).is_err() {
+fn read_lines(pipe: impl io::Read, tx: Sender<Raw>, line: impl Fn(String) -> Raw, closed: Raw) {
+    for read in BufReader::new(pipe).lines() {
+        let Ok(read) = read else { break };
+        if tx.send(line(read)).is_err() {
             return;
         }
     }
-    let _ = tx.send(AgentEvent::Exited);
+    let _ = tx.send(closed);
 }
