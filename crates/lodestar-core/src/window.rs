@@ -396,8 +396,8 @@ impl WindowModel {
     /// is focused. Whatever the session replaces is then not shown anywhere, and if the session
     /// was shown in another pane it moves, leaving that pane empty.
     ///
-    /// An edge drop is refused, changing nothing, when either half would be smaller than
-    /// [`MIN_PANE_SIZE`].
+    /// Dropping a session on the pane that already shows it does nothing. An edge drop is
+    /// refused, changing nothing, when either half would be smaller than [`MIN_PANE_SIZE`].
     pub fn drop_session(
         &mut self,
         session: SessionId,
@@ -405,6 +405,9 @@ impl WindowModel {
         zone: DropZone,
         area: Size,
     ) -> Result<(), Refused> {
+        if self.session_in(pane) == Some(session) {
+            return Ok(());
+        }
         let target = match zone {
             DropZone::Middle => {
                 if !self.panes.contains_key(&pane) {

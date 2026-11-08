@@ -686,7 +686,7 @@ mod swap {
 
 mod drop_session {
     use super::*;
-    use lodestar_core::window::DropZone;
+    use lodestar_core::window::{DropZone, PaneId};
 
     /// The launch panes are 800×600 each.
     const AREA: Size = Size::new(1601.0, 600.0);
@@ -760,5 +760,140 @@ mod drop_session {
         assert_eq!(layout.panes[2].rect, Rect::new(1201.5, 0.0, 399.5, 600.0));
         assert_eq!(model.session_in(right), Some(SessionId(1)));
         assert_eq!(model.session_in(new_pane), Some(SessionId(2)));
+    }
+
+    /// The pane the session lands in after an edge drop on the right launch pane, and the
+    /// rect of the pane it split.
+    fn edge_drop(direction: Direction) -> (WindowModel, Rect, Rect) {
+        let mut model = WindowModel::new();
+        let right = model.layout(AREA).panes[1].pane;
+        model.open_session(SessionId(1), right);
+        model
+            .drop_session(SessionId(2), right, DropZone::Edge(direction), AREA)
+            .unwrap();
+        let old = rect_of_session(&model, SessionId(1));
+        let new = rect_of_session(&model, SessionId(2));
+        (model, old, new)
+    }
+
+    #[test]
+    fn drop_on_the_left_edge_puts_the_session_in_a_new_left_half() {
+        let (model, old, new) = edge_drop(Direction::Left);
+
+        assert_eq!(new, Rect::new(801.0, 0.0, 399.5, 600.0));
+        assert_eq!(old, Rect::new(1201.5, 0.0, 399.5, 600.0));
+        assert_eq!(model.layout(AREA).panes.len(), 3);
+    }
+
+    #[test]
+    fn drop_on_the_top_edge_puts_the_session_in_a_new_top_half() {
+        let (model, old, new) = edge_drop(Direction::Up);
+
+        assert_eq!(new, Rect::new(801.0, 0.0, 800.0, 299.5));
+        assert_eq!(old, Rect::new(801.0, 300.5, 800.0, 299.5));
+        assert_eq!(model.layout(AREA).panes.len(), 3);
+    }
+
+    #[test]
+    fn drop_on_the_bottom_edge_puts_the_session_in_a_new_bottom_half() {
+        let (model, old, new) = edge_drop(Direction::Down);
+
+        assert_eq!(old, Rect::new(801.0, 0.0, 800.0, 299.5));
+        assert_eq!(new, Rect::new(801.0, 300.5, 800.0, 299.5));
+        assert_eq!(model.layout(AREA).panes.len(), 3);
+    }
+
+    #[test]
+    fn edge_drop_focuses_the_new_pane() {
+        let (model, _, new) = edge_drop(Direction::Right);
+
+        assert_eq!(
+            rect_of(&model, model.focused_pane()),
+            new,
+            "focus follows the dropped session"
+        );
+    }
+
+    #[test]
+    fn edge_drop_that_would_make_a_half_too_narrow_is_refused_and_changes_nothing() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(TALL_AREA);
+        let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+        model.open_session(SessionId(1), left);
+        model.open_session(SessionId(2), right);
+        let before = rects(&model, TALL_AREA);
+
+        let result = model.drop_session(SessionId(1), right, DropZone::Edge(Direction::Right), TALL_AREA);
+
+        assert_eq!(result, Err(Refused::BelowMinimumSize));
+        assert_eq!(rects(&model, TALL_AREA), before);
+        assert_eq!(model.session_in(left), Some(SessionId(1)));
+        assert_eq!(model.session_in(right), Some(SessionId(2)));
+    }
+
+    #[test]
+    fn drop_a_session_on_the_pane_it_already_occupies_changes_nothing() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+        model.open_session(SessionId(1), left);
+        model.focus(right);
+        let before = rects(&model, AREA);
+
+        model
+            .drop_session(SessionId(1), left, DropZone::Middle, AREA)
+            .unwrap();
+        model
+            .drop_session(SessionId(1), left, DropZone::Edge(Direction::Right), AREA)
+            .unwrap();
+
+        assert_eq!(rects(&model, AREA), before);
+        assert_eq!(model.session_in(left), Some(SessionId(1)));
+        assert_eq!(model.focused_pane(), right);
+    }
+
+    #[test]
+    fn a_session_is_in_at_most_one_pane_after_every_drop() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+        model.open_session(SessionId(1), left);
+        model.open_session(SessionId(2), right);
+        let drops = [
+            (SessionId(1), right, DropZone::Middle),
+            (SessionId(2), left, DropZone::Edge(Direction::Down)),
+            (SessionId(3), right, DropZone::Edge(Direction::Right)),
+            (SessionId(1), left, DropZone::Edge(Direction::Right)),
+            (SessionId(3), left, DropZone::Middle),
+        ];
+
+        for (session, pane, zone) in drops {
+            model.drop_session(session, pane, zone, AREA).unwrap();
+
+            let layout = model.layout(AREA);
+            let mut shown: Vec<SessionId> = layout
+                .panes
+                .iter()
+                .filter_map(|p| model.session_in(p.pane))
+                .collect();
+            let count = shown.len();
+            shown.sort();
+            shown.dedup();
+            assert_eq!(shown.len(), count, "a session appears in two panes");
+        }
+    }
+
+    fn rect_of(model: &WindowModel, pane: PaneId) -> Rect {
+        model
+            .layout(AREA)
+            .panes
+            .iter()
+            .find(|p| p.pane == pane)
+            .map(|p| p.rect)
+            .expect("the pane exists")
+    }
+
+    fn rect_of_session(model: &WindowModel, session: SessionId) -> Rect {
+        rect_of(model, model.pane_showing(session).expect("shown"))
     }
 }
