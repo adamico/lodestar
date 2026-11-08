@@ -12,6 +12,19 @@ impl Size {
     }
 }
 
+/// A position in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Point {
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
+
 /// An axis-aligned rectangle: `x`, `y` is the top-left corner.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {

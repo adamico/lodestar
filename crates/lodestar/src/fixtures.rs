@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use lodestar_core::session::{
     InitialSessions, Project, ProjectId, Session, SessionId, SessionSource, SessionStatus,
-    Transcript,
+    ToolCall, Transcript, TranscriptItem,
 };
 use serde::Deserialize;
 
@@ -39,9 +39,45 @@ struct FixtureSession {
     project: String,
     status: FixtureStatus,
     started_at: u64,
-    /// Plain-text Transcript items, oldest first.
+    /// Transcript items, oldest first.
     #[serde(default)]
-    transcript: Vec<String>,
+    transcript: Vec<FixtureItem>,
+}
+
+/// One Transcript item as written in the fixture file:
+/// `{"user": ".."}`, `{"assistant": ".."}` or `{"tool_call": {..}}`.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FixtureItem {
+    User(String),
+    Assistant(String),
+    ToolCall(FixtureToolCall),
+}
+
+#[derive(Deserialize)]
+struct FixtureToolCall {
+    name: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    input: String,
+    #[serde(default)]
+    output: String,
+}
+
+impl From<FixtureItem> for TranscriptItem {
+    fn from(item: FixtureItem) -> Self {
+        match item {
+            FixtureItem::User(text) => TranscriptItem::User(text),
+            FixtureItem::Assistant(markdown) => TranscriptItem::Assistant(markdown),
+            FixtureItem::ToolCall(call) => TranscriptItem::ToolCall(ToolCall {
+                name: call.name,
+                summary: call.summary,
+                input: call.input,
+                output: call.output,
+            }),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -83,10 +119,53 @@ impl FixtureFile {
                         FixtureStatus::Done => SessionStatus::Done,
                     },
                     started_at: session.started_at,
-                    transcript: Transcript::new(session.transcript),
+                    transcript: Transcript::new(
+                        session.transcript.into_iter().map(Into::into).collect(),
+                    ),
                 }
             })
             .collect();
         InitialSessions { projects, sessions }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bundled_fixtures_load_with_every_kind_of_transcript_item() {
+        let InitialSessions { sessions, .. } = FixtureSource.initial_sessions();
+
+        let items: Vec<&TranscriptItem> = sessions
+            .iter()
+            .flat_map(|session| session.transcript.items())
+            .collect();
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::User(_)))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::Assistant(_)))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::ToolCall(_)))
+        );
+    }
+
+    #[test]
+    fn at_least_one_fixture_transcript_is_long_enough_to_scroll() {
+        let InitialSessions { sessions, .. } = FixtureSource.initial_sessions();
+
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session.transcript.items().len() >= 25)
+        );
     }
 }

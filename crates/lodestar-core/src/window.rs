@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::geometry::{Rect, Size};
+use crate::geometry::{Point, Rect, Size};
 use crate::session::SessionId;
 
 /// Width of the gap between two panes, in logical pixels.
@@ -60,11 +60,19 @@ pub enum Refused {
     BelowMinimumSize,
     /// The pane no longer exists.
     NoSuchPane,
+    /// The divider no longer exists.
+    NoSuchDivider,
+    /// The pane has no neighbour on that side to take space from.
+    NoDividerOnThatSide,
 }
 
 /// Identifies a pane for as long as it exists. Ids are never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaneId(u64);
+
+/// Identifies a divider for as long as its split exists. Ids are never reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DividerId(u64);
 
 /// How a split lays out its two children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +91,7 @@ pub struct PaneLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DividerLayout {
+    pub id: DividerId,
     /// The axis of the split this divider belongs to. A horizontal split has a vertical divider.
     pub axis: Axis,
     pub rect: Rect,
@@ -100,6 +109,7 @@ pub struct Layout {
 enum Node {
     Pane(PaneId),
     Split {
+        divider: DividerId,
         axis: Axis,
         /// The share of space, minus the divider, that goes to `first`.
         ratio: f32,
@@ -113,16 +123,18 @@ impl Node {
         match self {
             Node::Pane(pane) => layout.panes.push(PaneLayout { pane: *pane, rect }),
             Node::Split {
+                divider,
                 axis,
                 ratio,
                 first,
                 second,
             } => {
-                let (first_rect, divider, second_rect) = split_rect(rect, *axis, *ratio);
+                let (first_rect, divider_rect, second_rect) = split_rect(rect, *axis, *ratio);
                 first.lay_out(first_rect, layout);
                 layout.dividers.push(DividerLayout {
+                    id: *divider,
                     axis: *axis,
-                    rect: divider,
+                    rect: divider_rect,
                 });
                 second.lay_out(second_rect, layout);
             }
@@ -172,6 +184,7 @@ pub struct WindowModel {
     panes: HashMap<PaneId, Option<SessionId>>,
     focused: PaneId,
     next_pane_id: u64,
+    next_divider_id: u64,
 }
 
 impl WindowModel {
@@ -182,10 +195,13 @@ impl WindowModel {
             panes: HashMap::new(),
             focused: PaneId(0),
             next_pane_id: 0,
+            next_divider_id: 0,
         };
         let left = model.new_pane();
         let right = model.new_pane();
+        let divider = model.new_divider();
         model.root = Node::Split {
+            divider,
             axis: Axis::Horizontal,
             ratio: 0.5,
             first: Box::new(Node::Pane(left)),
@@ -263,6 +279,12 @@ impl WindowModel {
         self.panes.insert(pane, None);
         pane
     }
+
+    fn new_divider(&mut self) -> DividerId {
+        let divider = DividerId(self.next_divider_id);
+        self.next_divider_id += 1;
+        divider
+    }
 }
 
 /// Splitting and closing panes.
@@ -300,8 +322,10 @@ impl WindowModel {
         }
 
         let new_pane = self.new_pane();
+        let divider = self.new_divider();
         let new_first = matches!(direction, Direction::Left | Direction::Up);
-        self.root.split_leaf(pane, new_pane, axis, new_first);
+        self.root
+            .split_leaf(pane, new_pane, divider, axis, new_first);
         self.focused = new_pane;
         Ok(new_pane)
     }
@@ -331,6 +355,254 @@ impl WindowModel {
             .into_iter()
             .find(|p| p.pane == pane)
             .map(|p| p.rect)
+    }
+}
+
+/// Resizing panes by moving dividers.
+impl WindowModel {
+    /// Move `divider` so that `ratio` of its split's space, minus the divider, goes to the first
+    /// side (left or top). Refused if any pane on either side would end up smaller than
+    /// [`MIN_PANE_SIZE`], or the divider no longer exists.
+    pub fn set_ratio(&mut self, divider: DividerId, ratio: f32, area: Size) -> Result<(), Refused> {
+        let rect = self
+            .rect_of_split(divider, area)
+            .ok_or(Refused::NoSuchDivider)?;
+        let split = self.root.split_mut(divider).ok_or(Refused::NoSuchDivider)?;
+        let Node::Split {
+            axis,
+            ratio: current,
+            first,
+            second,
+            ..
+        } = split
+        else {
+            unreachable!("split_mut returns a split");
+        };
+        let (first_rect, _, second_rect) = split_rect(rect, *axis, ratio);
+        if !first.fits_in(first_rect) || !second.fits_in(second_rect) {
+            return Err(Refused::BelowMinimumSize);
+        }
+        *current = ratio;
+        Ok(())
+    }
+
+    /// Grow the focused pane by `step` logical pixels toward `direction`, by moving the nearest
+    /// divider that encloses it on that side. Refused when there is no such divider, or when a
+    /// pane on the far side would end up smaller than [`MIN_PANE_SIZE`].
+    pub fn resize_in_direction(
+        &mut self,
+        direction: Direction,
+        step: f32,
+        area: Size,
+    ) -> Result<(), Refused> {
+        let axis = match direction {
+            Direction::Left | Direction::Right => Axis::Horizontal,
+            Direction::Up | Direction::Down => Axis::Vertical,
+        };
+        // Growing toward the right or bottom means the pane is on the first side of its split.
+        let grows_first = matches!(direction, Direction::Right | Direction::Down);
+        let mut path = Vec::new();
+        self.root.path_to(self.focused, &mut path);
+        let (divider, ratio) = path
+            .into_iter()
+            .rev()
+            .find(|split| split.axis == axis && split.is_first == grows_first)
+            .map(|split| (split.divider, split.ratio))
+            .ok_or(Refused::NoDividerOnThatSide)?;
+        let rect = self
+            .rect_of_split(divider, area)
+            .ok_or(Refused::NoSuchDivider)?;
+        let available = match axis {
+            Axis::Horizontal => rect.width - DIVIDER_THICKNESS,
+            Axis::Vertical => rect.height - DIVIDER_THICKNESS,
+        };
+        let delta = step / available;
+        let new_ratio = if grows_first {
+            ratio + delta
+        } else {
+            ratio - delta
+        };
+        self.set_ratio(divider, new_ratio, area)
+    }
+
+    /// Move `divider` to `position` in the pane area, as a mouse drag does: a vertical divider
+    /// follows the x coordinate, a horizontal one the y. It stops at the minimum pane size
+    /// instead of being refused. Refused only if the divider no longer exists.
+    pub fn drag_divider(
+        &mut self,
+        divider: DividerId,
+        position: Point,
+        area: Size,
+    ) -> Result<(), Refused> {
+        let (rect, split) = self
+            .rect_of_split(divider, area)
+            .zip(self.root.split(divider))
+            .ok_or(Refused::NoSuchDivider)?;
+        let Node::Split { axis, .. } = split else {
+            unreachable!("split returns a split");
+        };
+        let desired = match axis {
+            Axis::Horizontal => (position.x - rect.x) / (rect.width - DIVIDER_THICKNESS),
+            Axis::Vertical => (position.y - rect.y) / (rect.height - DIVIDER_THICKNESS),
+        };
+        let ratio = self.clamped_ratio(divider, desired, area);
+        self.set_ratio(divider, ratio, area)
+    }
+
+    /// The ratio nearest to `desired` that [`Self::set_ratio`] would accept for `divider`: a
+    /// mouse drag past the limit stops at the minimum pane size instead of being refused. A
+    /// divider that no longer exists, or whose panes are already too small, keeps its ratio.
+    pub fn clamped_ratio(&self, divider: DividerId, desired: f32, area: Size) -> f32 {
+        let Some((rect, split)) = self
+            .rect_of_split(divider, area)
+            .zip(self.root.split(divider))
+        else {
+            return desired;
+        };
+        let Node::Split {
+            axis,
+            ratio,
+            first,
+            second,
+            ..
+        } = split
+        else {
+            unreachable!("split returns a split");
+        };
+        let (available, first_min, second_min) = match axis {
+            Axis::Horizontal => (
+                rect.width - DIVIDER_THICKNESS,
+                first.min_size().width,
+                second.min_size().width,
+            ),
+            Axis::Vertical => (
+                rect.height - DIVIDER_THICKNESS,
+                first.min_size().height,
+                second.min_size().height,
+            ),
+        };
+        let lowest = first_min / available;
+        let highest = (available - second_min) / available;
+        if lowest > highest {
+            return *ratio;
+        }
+        desired.clamp(lowest, highest)
+    }
+
+    /// The rect that the split owning `divider` is laid out in.
+    fn rect_of_split(&self, divider: DividerId, area: Size) -> Option<Rect> {
+        self.root
+            .rect_of_split(divider, Rect::new(0.0, 0.0, area.width, area.height))
+    }
+}
+
+/// One split on the way from the root down to a pane.
+struct PathStep {
+    divider: DividerId,
+    axis: Axis,
+    ratio: f32,
+    /// Whether the pane lies on the first side (left or top) of this split.
+    is_first: bool,
+}
+
+impl Node {
+    /// Push the splits from this node down to `pane`, outermost first. Returns whether `pane`
+    /// is under this node.
+    fn path_to(&self, pane: PaneId, path: &mut Vec<PathStep>) -> bool {
+        match self {
+            Node::Pane(id) => *id == pane,
+            Node::Split {
+                divider,
+                axis,
+                ratio,
+                first,
+                second,
+            } => {
+                for (child, is_first) in [(first, true), (second, false)] {
+                    path.push(PathStep {
+                        divider: *divider,
+                        axis: *axis,
+                        ratio: *ratio,
+                        is_first,
+                    });
+                    if child.path_to(pane, path) {
+                        return true;
+                    }
+                    path.pop();
+                }
+                false
+            }
+        }
+    }
+
+    fn split(&self, divider: DividerId) -> Option<&Node> {
+        match self {
+            Node::Pane(_) => None,
+            Node::Split { divider: id, .. } if *id == divider => Some(self),
+            Node::Split { first, second, .. } => {
+                first.split(divider).or_else(|| second.split(divider))
+            }
+        }
+    }
+
+    fn split_mut(&mut self, divider: DividerId) -> Option<&mut Node> {
+        match self {
+            Node::Pane(_) => None,
+            Node::Split { divider: id, .. } if *id == divider => Some(self),
+            Node::Split { first, second, .. } => first
+                .split_mut(divider)
+                .or_else(|| second.split_mut(divider)),
+        }
+    }
+
+    fn rect_of_split(&self, divider: DividerId, rect: Rect) -> Option<Rect> {
+        match self {
+            Node::Pane(_) => None,
+            Node::Split { divider: id, .. } if *id == divider => Some(rect),
+            Node::Split {
+                axis,
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                let (first_rect, _, second_rect) = split_rect(rect, *axis, *ratio);
+                first
+                    .rect_of_split(divider, first_rect)
+                    .or_else(|| second.rect_of_split(divider, second_rect))
+            }
+        }
+    }
+
+    /// The smallest rect this subtree fits in without any pane going below [`MIN_PANE_SIZE`].
+    fn min_size(&self) -> Size {
+        match self {
+            Node::Pane(_) => MIN_PANE_SIZE,
+            Node::Split {
+                axis,
+                first,
+                second,
+                ..
+            } => {
+                let (a, b) = (first.min_size(), second.min_size());
+                match axis {
+                    Axis::Horizontal => Size::new(
+                        a.width + DIVIDER_THICKNESS + b.width,
+                        a.height.max(b.height),
+                    ),
+                    Axis::Vertical => Size::new(
+                        a.width.max(b.width),
+                        a.height + DIVIDER_THICKNESS + b.height,
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Whether every pane in this subtree keeps [`MIN_PANE_SIZE`] when laid out in `rect`.
+    fn fits_in(&self, rect: Rect) -> bool {
+        let min = self.min_size();
+        rect.width >= min.width && rect.height >= min.height
     }
 }
 
@@ -479,7 +751,14 @@ fn fits_minimum(rect: Rect) -> bool {
 
 impl Node {
     /// Replace the leaf `pane` with a split of `pane` and `new_pane`.
-    fn split_leaf(&mut self, pane: PaneId, new_pane: PaneId, axis: Axis, new_first: bool) {
+    fn split_leaf(
+        &mut self,
+        pane: PaneId,
+        new_pane: PaneId,
+        divider: DividerId,
+        axis: Axis,
+        new_first: bool,
+    ) {
         match self {
             Node::Pane(id) if *id == pane => {
                 let (first, second) = if new_first {
@@ -488,6 +767,7 @@ impl Node {
                     (pane, new_pane)
                 };
                 *self = Node::Split {
+                    divider,
                     axis,
                     ratio: 0.5,
                     first: Box::new(Node::Pane(first)),
@@ -496,8 +776,8 @@ impl Node {
             }
             Node::Pane(_) => {}
             Node::Split { first, second, .. } => {
-                first.split_leaf(pane, new_pane, axis, new_first);
-                second.split_leaf(pane, new_pane, axis, new_first);
+                first.split_leaf(pane, new_pane, divider, axis, new_first);
+                second.split_leaf(pane, new_pane, divider, axis, new_first);
             }
         }
     }

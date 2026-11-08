@@ -1,6 +1,6 @@
 use lodestar_core::session::{
     InitialSessions, Project, ProjectId, Session, SessionId, SessionSource, SessionStatus,
-    SessionStore, Transcript,
+    SessionStore, Transcript, TranscriptItem,
 };
 
 struct OneSession;
@@ -19,7 +19,10 @@ impl SessionSource for OneSession {
                 project: ProjectId(0),
                 status: SessionStatus::Running,
                 started_at: 1,
-                transcript: Transcript::new(vec!["Hello".into(), "Working on it.".into()]),
+                transcript: Transcript::new(vec![
+                    TranscriptItem::User("Hello".into()),
+                    TranscriptItem::Assistant("Working on it.".into()),
+                ]),
             }],
         }
     }
@@ -31,13 +34,19 @@ fn a_loaded_session_keeps_its_transcript_items_in_order() {
 
     let session = store.session(SessionId(0)).unwrap();
 
-    assert_eq!(session.transcript.items(), ["Hello", "Working on it."]);
+    assert_eq!(
+        session.transcript.items(),
+        [
+            TranscriptItem::User("Hello".into()),
+            TranscriptItem::Assistant("Working on it.".into()),
+        ]
+    );
 }
 
 mod new_sessions {
     use lodestar_core::session::{
         InitialSessions, Project, ProjectId, Session, SessionId, SessionSource, SessionStatus,
-        SessionStore, Transcript,
+        SessionStore, Transcript, TranscriptItem,
     };
 
     /// Two Projects; lodestar has two sessions, dotfiles has none.
@@ -50,7 +59,7 @@ mod new_sessions {
             project: ProjectId(project),
             status: SessionStatus::Done,
             started_at,
-            transcript: Transcript::new(vec!["Hello".into()]),
+            transcript: Transcript::new(vec![TranscriptItem::User("Hello".into())]),
         }
     }
 

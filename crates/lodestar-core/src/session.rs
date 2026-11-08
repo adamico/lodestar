@@ -26,22 +26,68 @@ pub enum SessionStatus {
     Done,
 }
 
+/// How many characters a tool call's headline may take before it is cut.
+const HEADLINE_CHARS: usize = 80;
+
+/// One tool the Agent ran: what it was asked and what came back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    pub name: String,
+    /// A short description of this call, usually the command or the file touched.
+    pub summary: String,
+    pub input: String,
+    pub output: String,
+}
+
+impl ToolCall {
+    /// The one line a collapsed tool call shows: the tool's name and the first line of its
+    /// summary (or of its input, when it has no summary), cut with an ellipsis when too long.
+    pub fn headline(&self) -> String {
+        let summary = if self.summary.trim().is_empty() {
+            &self.input
+        } else {
+            &self.summary
+        };
+        let first_line = summary.lines().next().unwrap_or_default().trim();
+        let headline = format!("{}  {}", self.name, first_line);
+        if headline.chars().count() <= HEADLINE_CHARS {
+            return headline;
+        }
+        let mut cut: String = headline.chars().take(HEADLINE_CHARS - 1).collect();
+        cut.push('\u{2026}');
+        cut
+    }
+}
+
+/// One entry in a Transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranscriptItem {
+    /// A message from the user, as plain text.
+    User(String),
+    /// A message from the Agent, as markdown.
+    Assistant(String),
+    ToolCall(ToolCall),
+}
+
 /// The ordered messages and tool calls that make up a session's history.
-///
-/// For now each item is plain text; richer items (markdown, tool calls) come later.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Transcript {
-    items: Vec<String>,
+    items: Vec<TranscriptItem>,
 }
 
 impl Transcript {
-    pub fn new(items: Vec<String>) -> Self {
+    pub fn new(items: Vec<TranscriptItem>) -> Self {
         Self { items }
     }
 
     /// The items in the order they happened.
-    pub fn items(&self) -> &[String] {
+    pub fn items(&self) -> &[TranscriptItem] {
         &self.items
+    }
+
+    /// Record an item that happened after every item so far.
+    pub fn push(&mut self, item: TranscriptItem) {
+        self.items.push(item);
     }
 }
 
