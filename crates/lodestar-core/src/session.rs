@@ -139,7 +139,9 @@ pub enum SessionUpdate {
 ///
 /// It supplies the sessions that exist at startup, then is polled for the updates that
 /// arrived since. Polling keeps this crate free of threads: whoever owns the source (the
-/// window) drives it from its own timer.
+/// window) drives it from its own timer. Commands go the other way through the same seam:
+/// the window creates a session in the store, then asks the source to start its Agent and
+/// to carry messages to it. Views never reach an Agent directly.
 pub trait SessionSource {
     fn initial_sessions(&mut self) -> InitialSessions;
 
@@ -148,6 +150,20 @@ pub trait SessionSource {
     fn poll_updates(&mut self, now: Duration) -> Vec<SessionUpdate> {
         let _ = now;
         Vec::new()
+    }
+
+    /// Start the Agent that drives `session`, working in `project`. Whatever the Agent does
+    /// from here arrives through `poll_updates`. The error is a message for the user, for
+    /// when no Agent could be started at all. Sources without Agents start nothing.
+    fn start_agent(&mut self, session: SessionId, project: &Project) -> Result<(), String> {
+        let _ = (session, project);
+        Ok(())
+    }
+
+    /// Carry the user's `text` to `session`'s Agent, which starts a turn. The Transcript item
+    /// for the message is the caller's to push. Sources without Agents drop it.
+    fn send_message(&mut self, session: SessionId, text: &str) {
+        let _ = (session, text);
     }
 }
 

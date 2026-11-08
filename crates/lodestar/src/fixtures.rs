@@ -320,4 +320,17 @@ mod tests {
                 .is_empty()
         );
     }
+
+    #[test]
+    fn a_fixture_agent_starts_and_takes_messages_without_streaming_anything() {
+        let mut source = FixtureSource::new();
+        let InitialSessions { projects, .. } = source.initial_sessions();
+        let project = projects.first().unwrap().clone();
+
+        let started = source.start_agent(SessionId(99), &project);
+        source.send_message(SessionId(99), "Say hello in one sentence.");
+
+        assert_eq!(started, Ok(()));
+        assert!(source.poll_updates(Duration::ZERO).is_empty());
+    }
 }
