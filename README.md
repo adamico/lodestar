@@ -29,6 +29,8 @@ sudo apt-get install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
 
 Then `cargo run -p lodestar`. It runs under X11 and Wayland.
 
+"New session" starts a real Claude Code Agent, so the `claude` CLI must be on your PATH (or named by `LODESTAR_CLAUDE_BIN`). To work on the UI without spending tokens, run on the bundled fixture sessions instead with `LODESTAR_FIXTURES=1 cargo run -p lodestar`.
+
 The workspace has two crates:
 
 - `lodestar-core`: the window model and sessions, in plain Rust with no GPUI. Its tests cover the layout and focus rules.

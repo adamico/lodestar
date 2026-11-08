@@ -41,7 +41,7 @@ pub struct MainWindow {
     pub(crate) sessions: SessionStore,
     /// Where updates to the sessions come from. Polled on a timer for as long as the window
     /// lives, whether or not the sessions they touch are shown.
-    source: Box<dyn SessionSource>,
+    pub(crate) source: Box<dyn SessionSource>,
     /// When polling started; the source's clock counts from here.
     started: Instant,
     /// The timer loop that polls the source. Dropped with the window.

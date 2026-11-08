@@ -10,13 +10,17 @@ use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::picker::{PickerEntry, PickerList, PickerState};
-use lodestar_core::session::Project;
+use lodestar_core::session::{
+    Project, ProjectId, SessionId, SessionStatus, SessionUpdate, TranscriptItem,
+};
 use lodestar_core::window::PaneId;
 
 use crate::main_window::{MainWindow, pane_element_id, status_color, status_dot};
 
 const BROWSE_LABEL: &str = "Browse\u{2026}";
 const FILTER_PLACEHOLDER: &str = "Type to filter";
+/// What every new session opens with, until the input box arrives.
+const FIRST_MESSAGE: &str = "Say hello in one sentence.";
 
 impl MainWindow {
     fn picker_list(&self, pane: PaneId) -> PickerList {
@@ -173,13 +177,38 @@ impl MainWindow {
         }
     }
 
-    /// Start a new session in the Project at `path` and show it in `pane`.
+    /// Start a new session in the Project at `path`, show it in `pane`, and start its Agent
+    /// on a first message. A session whose Agent could not start is done at once.
     fn start_session_in(&mut self, path: PathBuf, pane: PaneId) {
         let project = self.sessions.find_or_create_project(path.clone());
         self.sessions.add_recent_folder(path);
         let session = self.sessions.create_session(project);
         self.window_model.open_session(session, pane);
         self.pickers.remove(&pane);
+        self.start_agent(session, project);
+    }
+
+    fn start_agent(&mut self, session: SessionId, project: ProjectId) {
+        let Some(project) = self.sessions.project(project).cloned() else {
+            return;
+        };
+        match self.source.start_agent(session, &project) {
+            Ok(()) => {
+                self.sessions.apply(SessionUpdate::TranscriptItem {
+                    session,
+                    item: TranscriptItem::User(FIRST_MESSAGE.into()),
+                });
+                self.source.send_message(session, FIRST_MESSAGE);
+            }
+            Err(message) => {
+                // The error-handling slice puts `message` in the Transcript.
+                eprintln!("lodestar: {message}");
+                self.sessions.apply(SessionUpdate::Status {
+                    session,
+                    status: SessionStatus::Done,
+                });
+            }
+        }
     }
 
     /// Ask the system for a folder, then start a session there.

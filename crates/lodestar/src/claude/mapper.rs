@@ -75,7 +75,8 @@ pub fn updates_for(session: SessionId, event: &Event) -> Vec<SessionUpdate> {
     }
 }
 
-/// [`parse_line`] then [`updates_for`], for callers that do not need the event itself.
+/// [`parse_line`] then [`updates_for`], for tests that do not need the event itself.
+#[cfg(test)]
 pub fn map_line(session: SessionId, line: &str) -> Vec<SessionUpdate> {
     updates_for(session, &parse_line(line))
 }
