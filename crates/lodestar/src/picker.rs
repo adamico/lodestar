@@ -12,7 +12,7 @@ use gpui_kit::*;
 use lodestar_core::picker::{PickerEntry, PickerList, PickerState};
 use lodestar_core::window::PaneId;
 
-use crate::main_window::{MainWindow, status_color, status_dot};
+use crate::main_window::{MainWindow, pane_element_id, status_color, status_dot};
 
 const BROWSE_LABEL: &str = "Browse\u{2026}";
 const FILTER_PLACEHOLDER: &str = "Type to filter";
@@ -83,7 +83,7 @@ impl MainWindow {
     ) -> Stateful<Div> {
         let theme = cx.theme();
         let row = h_flex()
-            .id(("picker-row", ix))
+            .id(pane_element_id(&format!("picker-row-{ix}"), pane))
             .px_2()
             .py_1()
             .gap_2()

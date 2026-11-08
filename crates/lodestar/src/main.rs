@@ -1,4 +1,5 @@
 mod fixtures;
+mod leader;
 mod main_window;
 mod picker;
 
@@ -13,6 +14,7 @@ fn main() {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
+        leader::init(cx);
 
         let sessions = SessionStore::load(&mut FixtureSource);
         let options = WindowOptions {
@@ -21,7 +23,9 @@ fn main() {
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| MainWindow::new(sessions, window, cx))
+            let view = cx.new(|cx| MainWindow::new(sessions, cx));
+            window.focus(&view.read(cx).focus_handle(), cx);
+            view
         })
         .expect("failed to open the Lodestar window");
         cx.activate(true);
