@@ -30,6 +30,8 @@ pub enum Refused {
     NoSuchPane,
     /// The divider no longer exists.
     NoSuchDivider,
+    /// The pane has no neighbour on that side to take space from.
+    NoDividerOnThatSide,
 }
 
 /// Identifies a pane for as long as it exists. Ids are never reused.
@@ -352,6 +354,45 @@ impl WindowModel {
         Ok(())
     }
 
+    /// Grow the focused pane by `step` logical pixels toward `direction`, by moving the nearest
+    /// divider that encloses it on that side. Refused when there is no such divider, or when a
+    /// pane on the far side would end up smaller than [`MIN_PANE_SIZE`].
+    pub fn resize_in_direction(
+        &mut self,
+        direction: Direction,
+        step: f32,
+        area: Size,
+    ) -> Result<(), Refused> {
+        let axis = match direction {
+            Direction::Left | Direction::Right => Axis::Horizontal,
+            Direction::Up | Direction::Down => Axis::Vertical,
+        };
+        // Growing toward the right or bottom means the pane is on the first side of its split.
+        let grows_first = matches!(direction, Direction::Right | Direction::Down);
+        let mut path = Vec::new();
+        self.root.path_to(self.focused, &mut path);
+        let (divider, ratio) = path
+            .into_iter()
+            .rev()
+            .find(|split| split.axis == axis && split.is_first == grows_first)
+            .map(|split| (split.divider, split.ratio))
+            .ok_or(Refused::NoDividerOnThatSide)?;
+        let rect = self
+            .rect_of_split(divider, area)
+            .ok_or(Refused::NoSuchDivider)?;
+        let available = match axis {
+            Axis::Horizontal => rect.width - DIVIDER_THICKNESS,
+            Axis::Vertical => rect.height - DIVIDER_THICKNESS,
+        };
+        let delta = step / available;
+        let new_ratio = if grows_first {
+            ratio + delta
+        } else {
+            ratio - delta
+        };
+        self.set_ratio(divider, new_ratio, area)
+    }
+
     /// The ratio nearest to `desired` that [`Self::set_ratio`] would accept for `divider`: a
     /// mouse drag past the limit stops at the minimum pane size instead of being refused. A
     /// divider that no longer exists, or whose panes are already too small, keeps its ratio.
@@ -399,7 +440,45 @@ impl WindowModel {
     }
 }
 
+/// One split on the way from the root down to a pane.
+struct PathStep {
+    divider: DividerId,
+    axis: Axis,
+    ratio: f32,
+    /// Whether the pane lies on the first side (left or top) of this split.
+    is_first: bool,
+}
+
 impl Node {
+    /// Push the splits from this node down to `pane`, outermost first. Returns whether `pane`
+    /// is under this node.
+    fn path_to(&self, pane: PaneId, path: &mut Vec<PathStep>) -> bool {
+        match self {
+            Node::Pane(id) => *id == pane,
+            Node::Split {
+                divider,
+                axis,
+                ratio,
+                first,
+                second,
+            } => {
+                for (child, is_first) in [(first, true), (second, false)] {
+                    path.push(PathStep {
+                        divider: *divider,
+                        axis: *axis,
+                        ratio: *ratio,
+                        is_first,
+                    });
+                    if child.path_to(pane, path) {
+                        return true;
+                    }
+                    path.pop();
+                }
+                false
+            }
+        }
+    }
+
     fn split(&self, divider: DividerId) -> Option<&Node> {
         match self {
             Node::Pane(_) => None,

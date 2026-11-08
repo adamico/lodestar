@@ -561,3 +561,135 @@ mod resize_limits {
         assert_eq!(model.set_ratio(launch_divider, ratio, area), Ok(()));
     }
 }
+
+mod resize_by_keyboard {
+    use lodestar_core::geometry::{Rect, Size};
+    use lodestar_core::window::{Direction, Refused, WindowModel};
+
+    /// Two launch panes of 500×600 each.
+    const AREA: Size = Size::new(1001.0, 600.0);
+    const STEP: f32 = 40.0;
+
+    fn rects(model: &WindowModel) -> Vec<Rect> {
+        model.layout(AREA).panes.iter().map(|p| p.rect).collect()
+    }
+
+    #[test]
+    fn grow_the_left_pane_to_the_right_and_it_gains_a_step_from_its_neighbour() {
+        let mut model = WindowModel::new();
+
+        model
+            .resize_in_direction(Direction::Right, STEP, AREA)
+            .expect("there is room");
+
+        assert_eq!(
+            rects(&model),
+            vec![
+                Rect::new(0.0, 0.0, 540.0, 600.0),
+                Rect::new(541.0, 0.0, 460.0, 600.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn grow_the_left_pane_twice_and_it_gains_two_steps() {
+        let mut model = WindowModel::new();
+
+        model
+            .resize_in_direction(Direction::Right, STEP, AREA)
+            .expect("there is room");
+        model
+            .resize_in_direction(Direction::Right, STEP, AREA)
+            .expect("there is room");
+
+        let width = rects(&model)[0].width;
+        assert!((width - 580.0).abs() < 0.01, "left pane is {width}px wide");
+    }
+
+    #[test]
+    fn grow_the_right_pane_to_the_left_and_the_divider_moves_left() {
+        let mut model = WindowModel::new();
+        let right = model.layout(AREA).panes[1].pane;
+        model.focus(right);
+
+        model
+            .resize_in_direction(Direction::Left, STEP, AREA)
+            .expect("there is room");
+
+        assert_eq!(
+            rects(&model),
+            vec![
+                Rect::new(0.0, 0.0, 460.0, 600.0),
+                Rect::new(461.0, 0.0, 540.0, 600.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn grow_a_pane_toward_a_side_with_no_divider_and_it_is_refused() {
+        let mut model = WindowModel::new();
+        let before = rects(&model);
+
+        assert_eq!(
+            model.resize_in_direction(Direction::Left, STEP, AREA),
+            Err(Refused::NoDividerOnThatSide)
+        );
+        assert_eq!(
+            model.resize_in_direction(Direction::Up, STEP, AREA),
+            Err(Refused::NoDividerOnThatSide)
+        );
+        assert_eq!(rects(&model), before);
+    }
+
+    #[test]
+    fn grow_a_pane_past_its_neighbours_minimum_and_it_is_refused() {
+        let mut model = WindowModel::new();
+        for _ in 0..4 {
+            model
+                .resize_in_direction(Direction::Right, STEP, AREA)
+                .expect("there is room");
+        }
+        // The right pane is now 340px wide; another step would leave it 300px.
+        let before = rects(&model);
+
+        assert_eq!(
+            model.resize_in_direction(Direction::Right, STEP, AREA),
+            Err(Refused::BelowMinimumSize)
+        );
+        assert_eq!(rects(&model), before);
+    }
+
+    #[test]
+    fn grow_a_nested_pane_downward_and_only_its_own_split_moves() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        let bottom_left = model.split(left, Direction::Down, AREA).expect("fits");
+        model.focus(left);
+
+        model
+            .resize_in_direction(Direction::Down, STEP, AREA)
+            .expect("there is room");
+
+        let layout = model.layout(AREA);
+        let rect_of = |pane| layout.panes.iter().find(|p| p.pane == pane).unwrap().rect;
+        assert_eq!(rect_of(left), Rect::new(0.0, 0.0, 500.0, 339.5));
+        assert_eq!(rect_of(bottom_left), Rect::new(0.0, 340.5, 500.0, 259.5));
+        assert_eq!(layout.panes[2].rect, Rect::new(501.0, 0.0, 500.0, 600.0));
+    }
+
+    #[test]
+    fn grow_a_nested_pane_to_the_right_and_the_enclosing_divider_moves() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        model.split(left, Direction::Down, AREA).expect("fits");
+
+        model
+            .resize_in_direction(Direction::Right, STEP, AREA)
+            .expect("there is room");
+
+        let layout = model.layout(AREA);
+        assert_eq!(layout.panes[0].rect.width, 540.0);
+        assert_eq!(layout.panes[1].rect.width, 540.0);
+        assert_eq!(layout.panes[2].rect, Rect::new(541.0, 0.0, 460.0, 600.0));
+    }
+}
