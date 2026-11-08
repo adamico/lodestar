@@ -1,9 +1,10 @@
 //! From Claude Code's stream-json lines to `SessionUpdate`s, as a pure function.
 //!
 //! Every line is one JSON object with a `type`. `system`/`init` opens a turn, `assistant`
-//! carries what the Agent said and the tools it called, `user` carries those tools' results,
-//! `system`/`permission_denied` says a tool was refused, and `result` closes the turn (with an Error item when the turn failed).
-//! Everything else (progress blurbs, rate-limit notes, partial messages, lines that are not
+//! carries what the Agent said and the tools it called, `user` carries those tools' results
+//! (a refused tool's result is an error that says so, so `system`/`permission_denied`, which
+//! repeats it, is ignored), and `result` closes the turn, with an Error item when the turn
+//! failed. Everything else (progress blurbs, rate-limit notes, partial messages, lines that are not
 //! JSON) is ignored without complaint, because Claude Code adds event kinds freely and a
 //! stray line must never take the session down.
 //!
@@ -52,14 +53,6 @@ pub fn parse_line(line: &str) -> Event {
             },
             None => Event::Ignored,
         },
-        Some("system") if value["subtype"] == "permission_denied" => {
-            match (value["tool_use_id"].as_str(), value["message"].as_str()) {
-                (Some(id), Some(message)) => {
-                    Event::ToolResults(vec![(id.to_owned(), format!("Denied: {message}"))])
-                }
-                _ => Event::Ignored,
-            }
-        }
         // Subagent output comes with a parent tool use; it is not the Agent talking to us.
         Some("assistant") if value["parent_tool_use_id"].is_null() => {
             let blocks = content_blocks(&value)
@@ -398,10 +391,10 @@ mod tests {
     }
 
     #[test]
-    fn a_denied_tool_call_says_so_in_its_output_and_the_turn_still_ends_waiting() {
+    fn a_denied_tool_call_gets_one_result_saying_so_and_the_turn_still_ends_waiting() {
         let updates = mapped(TOOL_DENIED);
 
-        assert_eq!(updates.len(), 6);
+        assert_eq!(updates.len(), 5);
         assert_eq!(updates[0], status(SessionStatus::Running));
         let write = pending_call(&updates[1]);
         assert_eq!(write.id, "toolu_01Si71DtiY9TMSP8Ppycbuif");
@@ -413,19 +406,14 @@ mod tests {
         assert!(matches!(
             &updates[2],
             SessionUpdate::ToolResult { call_id, output, .. }
-                if call_id == "toolu_01Si71DtiY9TMSP8Ppycbuif" && output.starts_with("Denied: Claude requested permissions")
-        ));
-        assert!(matches!(
-            &updates[3],
-            SessionUpdate::ToolResult { call_id, output, .. }
                 if call_id == "toolu_01Si71DtiY9TMSP8Ppycbuif" && output.starts_with("Error: Claude requested permissions")
         ));
         assert!(matches!(
-            &updates[4],
+            &updates[3],
             SessionUpdate::TranscriptItem { item: TranscriptItem::Assistant(text), .. }
                 if text.contains("denied")
         ));
-        assert_eq!(updates[5], status(SessionStatus::WaitingForInput));
+        assert_eq!(updates[4], status(SessionStatus::WaitingForInput));
     }
 
     fn error(text: &str) -> SessionUpdate {
