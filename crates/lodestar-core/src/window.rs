@@ -33,11 +33,12 @@ pub enum DropZone {
 pub const DROP_EDGE_BAND: f32 = 0.25;
 
 impl DropZone {
-    /// The zone under a pointer at `(x, y)`, measured from the top-left of a pane of
+    /// The zone under a pointer at `pointer`, measured from the top-left of a pane of
     /// `pane_size`. The outer [`DROP_EDGE_BAND`] of each side is that edge; where two bands
     /// overlap at a corner, the side the pointer is proportionally nearer to wins. Everything
     /// else is the middle.
-    pub fn at((x, y): (f32, f32), pane_size: Size) -> Self {
+    pub fn at(pointer: Point, pane_size: Size) -> Self {
+        let Point { x, y } = pointer;
         let sides = [
             (Direction::Left, x / pane_size.width),
             (Direction::Right, (pane_size.width - x) / pane_size.width),

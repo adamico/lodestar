@@ -1313,38 +1313,54 @@ mod drop_session {
     /// Hit-testing a pointer position inside an 800×600 pane.
     mod zone_under_pointer {
         use super::*;
+        use lodestar_core::geometry::Point;
 
         const PANE: Size = Size::new(800.0, 600.0);
 
         #[test]
         fn the_centre_is_the_middle() {
-            assert_eq!(DropZone::at((400.0, 300.0), PANE), DropZone::Middle);
+            assert_eq!(
+                DropZone::at(Point::new(400.0, 300.0), PANE),
+                DropZone::Middle
+            );
         }
 
         #[test]
         fn just_inside_the_edge_bands_is_still_the_middle() {
-            assert_eq!(DropZone::at((200.0, 300.0), PANE), DropZone::Middle);
-            assert_eq!(DropZone::at((600.0, 300.0), PANE), DropZone::Middle);
-            assert_eq!(DropZone::at((400.0, 150.0), PANE), DropZone::Middle);
-            assert_eq!(DropZone::at((400.0, 450.0), PANE), DropZone::Middle);
+            assert_eq!(
+                DropZone::at(Point::new(200.0, 300.0), PANE),
+                DropZone::Middle
+            );
+            assert_eq!(
+                DropZone::at(Point::new(600.0, 300.0), PANE),
+                DropZone::Middle
+            );
+            assert_eq!(
+                DropZone::at(Point::new(400.0, 150.0), PANE),
+                DropZone::Middle
+            );
+            assert_eq!(
+                DropZone::at(Point::new(400.0, 450.0), PANE),
+                DropZone::Middle
+            );
         }
 
         #[test]
         fn the_outer_quarter_of_each_side_is_that_edge() {
             assert_eq!(
-                DropZone::at((100.0, 300.0), PANE),
+                DropZone::at(Point::new(100.0, 300.0), PANE),
                 DropZone::Edge(Direction::Left)
             );
             assert_eq!(
-                DropZone::at((700.0, 300.0), PANE),
+                DropZone::at(Point::new(700.0, 300.0), PANE),
                 DropZone::Edge(Direction::Right)
             );
             assert_eq!(
-                DropZone::at((400.0, 50.0), PANE),
+                DropZone::at(Point::new(400.0, 50.0), PANE),
                 DropZone::Edge(Direction::Up)
             );
             assert_eq!(
-                DropZone::at((400.0, 550.0), PANE),
+                DropZone::at(Point::new(400.0, 550.0), PANE),
                 DropZone::Edge(Direction::Down)
             );
         }
@@ -1353,12 +1369,12 @@ mod drop_session {
         fn a_corner_goes_to_the_side_the_pointer_is_nearer_to_in_proportion() {
             // 20px from the left edge (2.5% of width), 100px from the top (16.7% of height).
             assert_eq!(
-                DropZone::at((20.0, 100.0), PANE),
+                DropZone::at(Point::new(20.0, 100.0), PANE),
                 DropZone::Edge(Direction::Left)
             );
             // 180px from the right (22.5%), 10px from the bottom (1.7%).
             assert_eq!(
-                DropZone::at((620.0, 590.0), PANE),
+                DropZone::at(Point::new(620.0, 590.0), PANE),
                 DropZone::Edge(Direction::Down)
             );
         }

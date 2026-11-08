@@ -6,7 +6,7 @@
 
 use gpui_kit::component::{ActiveTheme, h_flex};
 use gpui_kit::*;
-use lodestar_core::geometry::Size;
+use lodestar_core::geometry::{self, Size};
 use lodestar_core::session::SessionId;
 use lodestar_core::window::{Direction, DropZone, PaneId};
 
@@ -187,8 +187,8 @@ impl MainWindow {
 }
 
 /// `position` relative to the top-left of `bounds`, in logical pixels.
-fn offset_in(bounds: Bounds<Pixels>, position: Point<Pixels>) -> (f32, f32) {
-    (
+fn offset_in(bounds: Bounds<Pixels>, position: Point<Pixels>) -> geometry::Point {
+    geometry::Point::new(
         f32::from(position.x - bounds.origin.x),
         f32::from(position.y - bounds.origin.y),
     )
