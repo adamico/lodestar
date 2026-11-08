@@ -436,6 +436,335 @@ mod open_session {
     }
 }
 
+mod resize {
+    use lodestar_core::geometry::{Rect, Size};
+    use lodestar_core::window::{DIVIDER_THICKNESS, WindowModel};
+
+    /// Two launch panes of 500×600 each.
+    const AREA: Size = Size::new(1001.0, 600.0);
+
+    fn rects(model: &WindowModel) -> Vec<Rect> {
+        model.layout(AREA).panes.iter().map(|p| p.rect).collect()
+    }
+
+    #[test]
+    fn set_a_divider_ratio_and_the_panes_on_both_sides_follow_it() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        model.set_ratio(divider, 0.4, AREA).expect("both sides fit");
+
+        assert_eq!(
+            rects(&model),
+            vec![
+                Rect::new(0.0, 0.0, 400.0, 600.0),
+                Rect::new(401.0, 0.0, 600.0, 600.0),
+            ]
+        );
+        assert_eq!(
+            model.layout(AREA).dividers[0].rect,
+            Rect::new(400.0, 0.0, DIVIDER_THICKNESS, 600.0)
+        );
+    }
+}
+
+mod resize_limits {
+    use lodestar_core::geometry::{Rect, Size};
+    use lodestar_core::window::{Direction, Refused, WindowModel};
+
+    /// Two launch panes of 500×600 each.
+    const AREA: Size = Size::new(1001.0, 600.0);
+
+    fn rects(model: &WindowModel) -> Vec<Rect> {
+        model.layout(AREA).panes.iter().map(|p| p.rect).collect()
+    }
+
+    #[test]
+    fn a_ratio_that_would_make_the_left_pane_too_narrow_is_refused_and_changes_nothing() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+        let before = rects(&model);
+
+        // 0.3 of 1000 is 300px, under the 320px minimum.
+        let result = model.set_ratio(divider, 0.3, AREA);
+
+        assert_eq!(result, Err(Refused::BelowMinimumSize));
+        assert_eq!(rects(&model), before);
+    }
+
+    #[test]
+    fn a_ratio_that_would_make_the_right_pane_too_narrow_is_refused() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        assert_eq!(
+            model.set_ratio(divider, 0.7, AREA),
+            Err(Refused::BelowMinimumSize)
+        );
+        assert_eq!(model.set_ratio(divider, 0.68, AREA), Ok(()));
+    }
+
+    #[test]
+    fn a_ratio_is_refused_when_a_pane_nested_on_that_side_would_be_too_narrow() {
+        // Wide area: 1601×600, launch panes 800×600. Split the right one side by side, so two
+        // 399.5px panes sit right of the launch divider; together they need 641px.
+        let area = Size::new(1601.0, 600.0);
+        let mut model = WindowModel::new();
+        let right = model.layout(area).panes[1].pane;
+        model.split(right, Direction::Right, area).expect("fits");
+        let launch_divider = model.layout(area).dividers[0].id;
+
+        // 0.6 leaves 640px for the right side, 1px short of the two minimum panes.
+        assert_eq!(
+            model.set_ratio(launch_divider, 0.6, area),
+            Err(Refused::BelowMinimumSize)
+        );
+        assert_eq!(model.set_ratio(launch_divider, 0.59, area), Ok(()));
+    }
+
+    #[test]
+    fn set_the_ratio_of_a_divider_that_no_longer_exists_and_it_is_refused() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (divider, right) = (layout.dividers[0].id, layout.panes[1].pane);
+        model.close(right);
+
+        assert_eq!(
+            model.set_ratio(divider, 0.4, AREA),
+            Err(Refused::NoSuchDivider)
+        );
+    }
+
+    #[test]
+    fn clamping_a_ratio_stops_each_side_at_the_minimum_pane_size() {
+        let model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        // 1000px of space: 320px minimum each side is ratio 0.32 on the left, 0.68 on the right.
+        assert_eq!(model.clamped_ratio(divider, 0.1, AREA), 0.32);
+        assert_eq!(model.clamped_ratio(divider, 0.9, AREA), 0.68);
+        assert_eq!(model.clamped_ratio(divider, 0.5, AREA), 0.5);
+    }
+
+    #[test]
+    fn clamping_a_ratio_keeps_room_for_the_panes_nested_on_each_side() {
+        let area = Size::new(1601.0, 600.0);
+        let mut model = WindowModel::new();
+        let right = model.layout(area).panes[1].pane;
+        model.split(right, Direction::Right, area).expect("fits");
+        let launch_divider = model.layout(area).dividers[0].id;
+
+        // 1600px of space; the right side needs 641px, so the left may take at most 959px.
+        let ratio = model.clamped_ratio(launch_divider, 1.0, area);
+
+        assert_eq!(ratio, 959.0 / 1600.0);
+        assert_eq!(model.set_ratio(launch_divider, ratio, area), Ok(()));
+    }
+}
+
+mod resize_by_keyboard {
+    use lodestar_core::geometry::{Rect, Size};
+    use lodestar_core::window::{Direction, Refused, WindowModel};
+
+    /// Two launch panes of 500×600 each.
+    const AREA: Size = Size::new(1001.0, 600.0);
+    const STEP: f32 = 40.0;
+
+    fn rects(model: &WindowModel) -> Vec<Rect> {
+        model.layout(AREA).panes.iter().map(|p| p.rect).collect()
+    }
+
+    #[test]
+    fn grow_the_left_pane_to_the_right_and_it_gains_a_step_from_its_neighbour() {
+        let mut model = WindowModel::new();
+
+        model
+            .resize_in_direction(Direction::Right, STEP, AREA)
+            .expect("there is room");
+
+        assert_eq!(
+            rects(&model),
+            vec![
+                Rect::new(0.0, 0.0, 540.0, 600.0),
+                Rect::new(541.0, 0.0, 460.0, 600.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn grow_the_left_pane_twice_and_it_gains_two_steps() {
+        let mut model = WindowModel::new();
+
+        model
+            .resize_in_direction(Direction::Right, STEP, AREA)
+            .expect("there is room");
+        model
+            .resize_in_direction(Direction::Right, STEP, AREA)
+            .expect("there is room");
+
+        let width = rects(&model)[0].width;
+        assert!((width - 580.0).abs() < 0.01, "left pane is {width}px wide");
+    }
+
+    #[test]
+    fn grow_the_right_pane_to_the_left_and_the_divider_moves_left() {
+        let mut model = WindowModel::new();
+        let right = model.layout(AREA).panes[1].pane;
+        model.focus(right);
+
+        model
+            .resize_in_direction(Direction::Left, STEP, AREA)
+            .expect("there is room");
+
+        assert_eq!(
+            rects(&model),
+            vec![
+                Rect::new(0.0, 0.0, 460.0, 600.0),
+                Rect::new(461.0, 0.0, 540.0, 600.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn grow_a_pane_toward_a_side_with_no_divider_and_it_is_refused() {
+        let mut model = WindowModel::new();
+        let before = rects(&model);
+
+        assert_eq!(
+            model.resize_in_direction(Direction::Left, STEP, AREA),
+            Err(Refused::NoDividerOnThatSide)
+        );
+        assert_eq!(
+            model.resize_in_direction(Direction::Up, STEP, AREA),
+            Err(Refused::NoDividerOnThatSide)
+        );
+        assert_eq!(rects(&model), before);
+    }
+
+    #[test]
+    fn grow_a_pane_past_its_neighbours_minimum_and_it_is_refused() {
+        let mut model = WindowModel::new();
+        for _ in 0..4 {
+            model
+                .resize_in_direction(Direction::Right, STEP, AREA)
+                .expect("there is room");
+        }
+        // The right pane is now 340px wide; another step would leave it 300px.
+        let before = rects(&model);
+
+        assert_eq!(
+            model.resize_in_direction(Direction::Right, STEP, AREA),
+            Err(Refused::BelowMinimumSize)
+        );
+        assert_eq!(rects(&model), before);
+    }
+
+    #[test]
+    fn grow_a_nested_pane_downward_and_only_its_own_split_moves() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        let bottom_left = model.split(left, Direction::Down, AREA).expect("fits");
+        model.focus(left);
+
+        model
+            .resize_in_direction(Direction::Down, STEP, AREA)
+            .expect("there is room");
+
+        let layout = model.layout(AREA);
+        let rect_of = |pane| layout.panes.iter().find(|p| p.pane == pane).unwrap().rect;
+        assert_eq!(rect_of(left), Rect::new(0.0, 0.0, 500.0, 339.5));
+        assert_eq!(rect_of(bottom_left), Rect::new(0.0, 340.5, 500.0, 259.5));
+        assert_eq!(layout.panes[2].rect, Rect::new(501.0, 0.0, 500.0, 600.0));
+    }
+
+    #[test]
+    fn grow_a_nested_pane_to_the_right_and_the_enclosing_divider_moves() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        model.split(left, Direction::Down, AREA).expect("fits");
+
+        model
+            .resize_in_direction(Direction::Right, STEP, AREA)
+            .expect("there is room");
+
+        let layout = model.layout(AREA);
+        assert_eq!(layout.panes[0].rect.width, 540.0);
+        assert_eq!(layout.panes[1].rect.width, 540.0);
+        assert_eq!(layout.panes[2].rect, Rect::new(541.0, 0.0, 460.0, 600.0));
+    }
+}
+
+mod drag_divider {
+    use lodestar_core::geometry::{Point, Rect, Size};
+    use lodestar_core::window::{Direction, Refused, WindowModel};
+
+    /// Two launch panes of 500×600 each.
+    const AREA: Size = Size::new(1001.0, 600.0);
+
+    fn rects(model: &WindowModel) -> Vec<Rect> {
+        model.layout(AREA).panes.iter().map(|p| p.rect).collect()
+    }
+
+    #[test]
+    fn drag_the_divider_to_a_point_and_it_sits_there() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        model
+            .drag_divider(divider, Point::new(400.0, 123.0), AREA)
+            .expect("the divider exists");
+
+        assert_eq!(
+            rects(&model),
+            vec![
+                Rect::new(0.0, 0.0, 400.0, 600.0),
+                Rect::new(401.0, 0.0, 600.0, 600.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn drag_the_divider_past_the_minimum_and_it_stops_at_the_minimum() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        model
+            .drag_divider(divider, Point::new(50.0, 0.0), AREA)
+            .expect("the divider exists");
+
+        assert_eq!(rects(&model)[0].width, 320.0);
+    }
+
+    #[test]
+    fn drag_a_horizontal_divider_and_only_its_vertical_position_matters() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        model.split(left, Direction::Down, AREA).expect("fits");
+        let divider = model.layout(AREA).dividers[0].id;
+
+        model
+            .drag_divider(divider, Point::new(900.0, 250.0), AREA)
+            .expect("the divider exists");
+
+        let layout = model.layout(AREA);
+        assert_eq!(layout.panes[0].rect, Rect::new(0.0, 0.0, 500.0, 250.0));
+        assert_eq!(layout.panes[1].rect, Rect::new(0.0, 251.0, 500.0, 349.0));
+    }
+
+    #[test]
+    fn drag_a_divider_that_no_longer_exists_and_it_is_refused() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (divider, right) = (layout.dividers[0].id, layout.panes[1].pane);
+        model.close(right);
+
+        assert_eq!(
+            model.drag_divider(divider, Point::new(400.0, 0.0), AREA),
+            Err(Refused::NoSuchDivider)
+        );
+    }
+}
+
 mod focus_and_swap {
     use lodestar_core::geometry::Size;
     use lodestar_core::window::{Direction, WindowModel};
