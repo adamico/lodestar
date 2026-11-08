@@ -100,6 +100,10 @@ impl SessionStore {
         sessions
     }
 
+    pub fn project(&self, id: ProjectId) -> Option<&Project> {
+        self.projects.iter().find(|project| project.id == id)
+    }
+
     pub fn session(&self, id: SessionId) -> Option<&Session> {
         self.sessions.iter().find(|session| session.id == id)
     }

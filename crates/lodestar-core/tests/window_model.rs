@@ -129,6 +129,8 @@ mod open_session {
         assert_eq!(model.sessions_shown(), vec![SessionId(1)]);
     }
 
+    type Command = Box<dyn Fn(&mut WindowModel)>;
+
     /// Every session appears in at most one pane, judged only through what the model reports.
     fn assert_one_pane_per_session(model: &WindowModel) {
         for session in model.sessions_shown() {
@@ -153,7 +155,7 @@ mod open_session {
         let [left, right] = panes(&model)[..] else {
             unreachable!()
         };
-        let commands: Vec<Box<dyn Fn(&mut WindowModel)>> = vec![
+        let commands: Vec<Command> = vec![
             Box::new(move |m| m.open_session(SessionId(1), left)),
             Box::new(move |m| m.focus(right)),
             Box::new(move |m| m.open_session(SessionId(2), right)),

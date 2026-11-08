@@ -5,11 +5,45 @@
     { "name": "dotfiles", "path": "~/dotfiles" }
   ],
   "sessions": [
-    { "title": "Pane tree and layout", "project": "lodestar", "status": "running", "started_at": 1793270400 },
-    { "title": "CI on Ubuntu", "project": "lodestar", "status": "done", "started_at": 1793263200 },
-    { "title": "Sprite batching", "project": "pixel-forge", "status": "waiting_for_input", "started_at": 1793268000 },
-    { "title": "Tilemap collisions", "project": "pixel-forge", "status": "running", "started_at": 1793266200 },
-    { "title": "Port Love2D input layer", "project": "pixel-forge", "status": "done", "started_at": 1793180000 },
-    { "title": "Hyprland keybinds", "project": "dotfiles", "status": "waiting_for_input", "started_at": 1793259600 }
+    { "title": "Pane tree and layout", "project": "lodestar", "status": "running", "started_at": 1793270400,
+      "transcript": [
+        "You: Lay out the pane tree as a binary tree of splits with flex ratios.",
+        "Assistant: On it. I'm adding a Node enum with Pane and Split variants and a lay_out method that walks the tree.",
+        "Tool: cargo test -p lodestar-core — 4 passed"
+      ]
+    },
+    { "title": "CI on Ubuntu", "project": "lodestar", "status": "done", "started_at": 1793263200,
+      "transcript": [
+        "You: Add a GitHub Actions job running fmt, clippy, tests and a release build.",
+        "Assistant: Added .github/workflows/ci.yml with one Ubuntu job and the GPUI system packages.",
+        "Assistant: CI is green."
+      ]
+    },
+    { "title": "Sprite batching", "project": "pixel-forge", "status": "waiting_for_input", "started_at": 1793268000,
+      "transcript": [
+        "You: Batch sprites by texture so we issue one draw call per atlas.",
+        "Assistant: I grouped quads by texture id and flush when the atlas changes. Should sprites with blend modes break a batch too?"
+      ]
+    },
+    { "title": "Tilemap collisions", "project": "pixel-forge", "status": "running", "started_at": 1793266200,
+      "transcript": [
+        "You: Resolve tile collisions per axis to stop corner snagging.",
+        "Assistant: Separating the X and Y sweeps now. Running the physics tests next.",
+        "Tool: cargo test -p pixel-forge physics — running"
+      ]
+    },
+    { "title": "Port Love2D input layer", "project": "pixel-forge", "status": "done", "started_at": 1793180000,
+      "transcript": [
+        "You: Port the Love2D input layer to the new engine.",
+        "Assistant: Mapped love.keypressed/keyreleased onto the event queue and kept the key names.",
+        "Assistant: Done; all input examples run."
+      ]
+    },
+    { "title": "Hyprland keybinds", "project": "dotfiles", "status": "waiting_for_input", "started_at": 1793259600,
+      "transcript": [
+        "You: Move window switching to Super+Tab and free up Super+Space.",
+        "Assistant: Rebound in hyprland.conf. Do you want Super+Space to stay unbound, or launch the app launcher?"
+      ]
+    }
   ]
 }
