@@ -40,7 +40,8 @@ Start Lodestar (`cargo run`) with a real `claude` on PATH, or `LODESTAR_CLAUDE_B
 
 Start Lodestar with a real `claude`, start a session and send a message.
 
-- [ ] While the Agent works, one muted line follows the last Transcript item: three orange dots
+- [ ] While the Agent works, one muted line sits just above the input box, in place of the
+      "Agent is running" notice: three orange dots
       with a bright one sweeping across them, then `12s · 340 tokens · Thinking`. It is gone
       once the reply lands and the session waits for input, and after a failed turn or an exit.
 - [ ] The seconds count up every quarter second or so, from the moment the message was sent,
@@ -50,6 +51,6 @@ Start Lodestar with a real `claude`, start a session and send a message.
       and a tool's label (`Running Bash`, `Reading`, `Editing`, `Searching`, `Using <tool>`)
       from the call until the next request.
 - [ ] The Transcript still gets one Assistant item per message, never a partial one, and a
-      running pane keeps following its tail with the indicator in view.
+      running pane keeps following its tail; the indicator stays put as the list scrolls.
 - [ ] With `LODESTAR_FIXTURES=1`, a session running at startup shows the indicator counting
       from startup.

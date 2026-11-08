@@ -5,9 +5,10 @@
 //! running follows the tail: new rows keep the end in view until the user scrolls up, which
 //! pauses following and shows a "Jump to latest" pill that resumes it.
 //!
-//! While the session runs, one more row follows the last item: the working indicator, a
-//! spinner and the store's working line (`55s · 1.5k tokens · Thinking`). The window
-//! re-renders at least every poll while a session runs, so its seconds tick.
+//! While the session runs, the working indicator sits just above the input box: a spinner
+//! and the store's working line (`55s · 1.5k tokens · Thinking`). It stands in for the
+//! refusal notice, which would only repeat that the Agent is running. The window re-renders
+//! at least every poll while a session runs, so its seconds tick.
 //!
 //! The input box sends on `enter` (`shift+enter` inserts a newline) and `escape` hands the
 //! keyboard back to the window. Whether a session can take a message, and what sending does to
@@ -134,10 +135,8 @@ struct PaneTranscript {
     expanded: HashSet<usize>,
     /// Whether the list was told to follow its tail, which it does for a running session.
     follows_tail: bool,
-    /// How many Transcript items the list has rows for, and whether the working indicator
-    /// row follows them.
+    /// How many Transcript items the list has rows for.
     items: usize,
-    indicator: bool,
 }
 
 impl TranscriptViews {
@@ -146,8 +145,8 @@ impl TranscriptViews {
     /// While the session runs, the list follows new items; once the user scrolls up, a pill
     /// over the bottom of the list offers to jump back to the latest. `can_send` is the
     /// store's answer on whether the session takes a message now; a refusal is shown by the
-    /// box. `working` is the working indicator's line, shown after the last item while the
-    /// session runs.
+    /// box. `working` is the working indicator's line, shown just above the input box while
+    /// the session runs.
     pub fn render(
         &mut self,
         pane: PaneId,
@@ -177,7 +176,7 @@ impl TranscriptViews {
                 input.set_placeholder(placeholder, window, cx)
             });
         }
-        let notice = can_send.err().map(|refusal| {
+        let notice = can_send.err().filter(|_| working.is_none()).map(|refusal| {
             div()
                 .px_1()
                 .pb_1()
@@ -195,8 +194,7 @@ impl TranscriptViews {
 
         let list = list(list_state, move |ix, _, cx| {
             let Some(item) = items.get(ix) else {
-                return render_working(pane, working.as_deref().unwrap_or_default(), cx)
-                    .into_any_element();
+                return div().into_any_element();
             };
             div()
                 .w_full()
@@ -249,6 +247,7 @@ impl TranscriptViews {
                     .p_2()
                     .border_t_1()
                     .border_color(cx.theme().border)
+                    .children(working.map(|line| render_working(pane, line, cx)))
                     .children(notice)
                     .child(Textarea::new(&state.input).disabled(disabled)),
             )
@@ -318,13 +317,11 @@ impl TranscriptViews {
         self.panes.retain(|pane, _| shows_transcript(*pane));
     }
 
-    /// The state for `pane`, sized for `item_count` items of `session`, plus the working
-    /// indicator's row while the session is `streaming`.
+    /// The state for `pane`, sized for `item_count` items of `session`.
     ///
     /// A pane that switches session starts with every tool call collapsed, from the top, or
     /// from the end and following the tail when the session is `streaming`; a Transcript
-    /// that grew keeps its scroll position and learns about the new rows. The indicator row
-    /// counts as changed whenever the items do, so an item never inherits its height.
+    /// that grew keeps its scroll position and learns about the new rows.
     fn sync(
         &mut self,
         pane: PaneId,
@@ -334,7 +331,6 @@ impl TranscriptViews {
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> &mut PaneTranscript {
-        let indicator = streaming;
         let mut fresh = false;
         let state = self.panes.entry(pane).or_insert_with(|| {
             fresh = true;
@@ -357,33 +353,25 @@ impl TranscriptViews {
             );
             PaneTranscript {
                 session,
-                list: ListState::new(
-                    item_count + usize::from(indicator),
-                    ListAlignment::Top,
-                    LIST_OVERDRAW,
-                ),
+                list: ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW),
                 input,
                 _input_events: input_events,
                 placeholder: INPUT_PLACEHOLDER,
                 expanded: HashSet::new(),
                 follows_tail: false,
                 items: item_count,
-                indicator,
             }
         });
-        let rows = item_count + usize::from(indicator);
         if state.session != session {
             fresh = true;
             state.session = session;
             state.expanded.clear();
-            state.list.reset(rows);
-        } else if item_count != state.items || indicator != state.indicator {
-            let known = state.list.item_count();
+            state.list.reset(item_count);
+        } else if item_count != state.items {
             let kept = state.items.min(item_count);
-            state.list.splice(kept..known, rows - kept);
+            state.list.splice(kept..state.items, item_count - kept);
         }
         state.items = item_count;
-        state.indicator = indicator;
         if fresh {
             state.follows_tail = streaming;
             state.list.set_follow_mode(if streaming {
@@ -429,14 +417,14 @@ fn render_jump_to_latest(pane: PaneId, cx: &mut Context<MainWindow>) -> impl Int
 }
 
 /// The working indicator: an orange spinner, then `line` in muted text.
-fn render_working(pane: PaneId, line: &str, cx: &App) -> impl IntoElement {
+fn render_working(pane: PaneId, line: String, cx: &App) -> impl IntoElement {
     h_flex()
-        .px_3()
-        .pb_3()
+        .px_1()
+        .pb_2()
         .gap_2()
         .text_color(cx.theme().muted_foreground)
         .child(render_spinner(pane))
-        .child(line.to_string())
+        .child(line)
 }
 
 /// Three orange dots on a diagonal, a bright one sweeping across them and fading behind.
