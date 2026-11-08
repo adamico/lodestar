@@ -3,7 +3,8 @@
 //! The list is GPUI's `list`, which measures each row as it is drawn, so markdown of any
 //! height works. Its `ListState` is the per-pane scroll handle. A pane whose session is
 //! running follows the tail: new rows keep the end in view until the user scrolls up, which
-//! pauses following and shows a "Jump to latest" pill that resumes it.
+//! pauses following. Once the last item is out of view, a "Jump to latest" pill offers to
+//! resume it.
 //!
 //! While the session runs, the working indicator sits just above the input box: a spinner
 //! and the store's working line (`55s · 1.5k tokens · Thinking`). It stands in for the
@@ -185,7 +186,7 @@ impl TranscriptViews {
                 .child(refusal.reason())
         });
         let disabled = can_send == Err(SendRefusal::SessionDone);
-        let paused = streaming && !state.list.is_following_tail();
+        let paused = streaming && !state.list.is_following_tail() && !last_item_shown(&state.list);
         let items = transcript.items().to_vec();
         let expanded = state.expanded.clone();
         let this = cx.weak_entity();
@@ -382,6 +383,19 @@ impl TranscriptViews {
         }
         state
     }
+}
+
+/// Whether any part of the list's last item was on screen at the last layout.
+///
+/// The "Jump to latest" pill shows only when the user scrolled up far enough to lose it: a
+/// paused list whose last item is still in view needs no way back to it.
+fn last_item_shown(list: &ListState) -> bool {
+    let Some(last) = list.item_count().checked_sub(1) else {
+        return true;
+    };
+    let viewport = list.viewport_bounds();
+    list.bounds_for_item(last)
+        .is_some_and(|item| item.top() < viewport.bottom() && item.bottom() > viewport.top())
 }
 
 fn item_element_id(pane: PaneId, ix: usize, what: &str) -> ElementId {
