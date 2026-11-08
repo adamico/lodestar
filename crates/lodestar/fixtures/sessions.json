@@ -182,6 +182,60 @@
         {
           "assistant": "## Summary\n\n- `Node` tree with `Pane` and `Split` variants, exactly two children per split.\n- `layout(size)` returns pane rectangles and divider rectangles.\n- `split` refuses below `320x200` and reports `Refused::TooSmall`.\n- `close` collapses to the sibling; closing the last pane leaves one empty pane.\n\nSeven tests cover the behaviours above. Want me to add focus by direction next?"
         }
+      ],
+      "stream": [
+        {
+          "after_ms": 1500,
+          "user": "Yes, add focus by direction next. Probe from the centre of the focused pane's edge."
+        },
+        {
+          "after_ms": 3500,
+          "assistant": "Focus by direction from the layout rectangles, then:\n\n1. Take the focused pane's `Rect`.\n2. Probe one pixel past the edge in the requested direction, level with the pane's centre.\n3. Focus whichever pane contains that point; do nothing when none does.\n\nThe probe uses the model's own layout, so it is testable without a window."
+        },
+        {
+          "after_ms": 5500,
+          "tool_call": {
+            "name": "Edit",
+            "summary": "crates/lodestar-core/tests/window_model.rs",
+            "input": "append: fn focus_right_lands_on_the_pane_beside_the_focused_one() { .. }",
+            "output": "Edited crates/lodestar-core/tests/window_model.rs (+22 -0)"
+          }
+        },
+        {
+          "after_ms": 7500,
+          "tool_call": {
+            "name": "Bash",
+            "summary": "cargo test -p lodestar-core focus_right",
+            "input": "cargo test -p lodestar-core focus_right",
+            "output": "running 1 test\ntest focus_right_lands_on_the_pane_beside_the_focused_one ... FAILED\n\nfailures:\n    focus_right_lands_on_the_pane_beside_the_focused_one"
+          }
+        },
+        {
+          "after_ms": 9500,
+          "tool_call": {
+            "name": "Edit",
+            "summary": "crates/lodestar-core/src/window.rs",
+            "input": "append: pub fn focus_in_direction(&mut self, direction: Direction, area: Size) { .. }",
+            "output": "Edited crates/lodestar-core/src/window.rs (+31 -0)"
+          }
+        },
+        {
+          "after_ms": 11500,
+          "tool_call": {
+            "name": "Bash",
+            "summary": "cargo test -p lodestar-core",
+            "input": "cargo test -p lodestar-core",
+            "output": "running 8 tests\ntest focus_right_lands_on_the_pane_beside_the_focused_one ... ok\n\ntest result: ok. 8 passed; 0 failed"
+          }
+        },
+        {
+          "after_ms": 13500,
+          "assistant": "Focus by direction is in:\n\n```rust\npub fn focus_in_direction(&mut self, direction: Direction, area: Size) {\n    let from = self.layout(area).rect_of(self.focused);\n    let probe = from.probe_past_edge(direction);\n    if let Some(pane) = self.pane_at(probe, area) {\n        self.focused = pane;\n    }\n}\n```\n\nAll eight tests pass. Swapping by direction can reuse `pane_at`; I'll stop here unless you want it now."
+        },
+        {
+          "after_ms": 14000,
+          "status": "done"
+        }
       ]
     },
     {
@@ -266,6 +320,38 @@
             "input": "cargo test -p pixel-forge physics",
             "output": "running 9 tests\ntest physics::slide_along_wall ... ok\ntest physics::no_corner_snag ..."
           }
+        }
+      ],
+      "stream": [
+        {
+          "after_ms": 2500,
+          "tool_call": {
+            "name": "Bash",
+            "summary": "cargo test -p pixel-forge physics",
+            "input": "cargo test -p pixel-forge physics",
+            "output": "running 9 tests\ntest physics::slide_along_wall ... ok\ntest physics::no_corner_snag ... ok\ntest physics::stairs_step_up ... FAILED\n\nfailures:\n    physics::stairs_step_up\n\ntest result: FAILED. 8 passed; 1 failed"
+          }
+        },
+        {
+          "after_ms": 5000,
+          "assistant": "One failure: `stairs_step_up`. Resolving X before Y means the player now stops at a one-tile step instead of climbing it.\n\nThere are two ways to keep stairs working:\n\n- **Step-up probe**: after the X sweep is blocked, retry it from one tile higher and accept it if that resolves cleanly.\n- **Slopes as a separate pass**: treat stair tiles as slopes with their own resolver.\n\nThe probe is a dozen lines and matches how the old combined sweep behaved."
+        },
+        {
+          "after_ms": 7500,
+          "tool_call": {
+            "name": "Read",
+            "summary": "src/physics/stairs.rs",
+            "input": "src/physics/stairs.rs",
+            "output": "pub const STEP_HEIGHT: f32 = 16.0;\n\npub fn is_stair(tile: Tile) -> bool {\n    matches!(tile, Tile::StairLeft | Tile::StairRight)\n}"
+          }
+        },
+        {
+          "after_ms": 10000,
+          "assistant": "Which approach do you want? The step-up probe keeps today's behaviour; slopes are more work but would also let you add ramps later."
+        },
+        {
+          "after_ms": 10500,
+          "status": "waiting_for_input"
         }
       ]
     },

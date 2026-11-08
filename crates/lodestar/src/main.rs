@@ -22,7 +22,7 @@ fn main() {
         transcript_view::bind_keys(cx);
         leader::init(cx);
 
-        let sessions = SessionStore::load(&mut FixtureSource);
+        let sessions = SessionStore::load(&mut FixtureSource::new());
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
             app_id: Some("lodestar".into()),
