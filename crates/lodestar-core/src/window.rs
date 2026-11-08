@@ -29,6 +29,29 @@ pub enum DropZone {
     Edge(Direction),
 }
 
+/// How much of each side of a pane, as a share of its width or height, counts as an edge zone.
+pub const DROP_EDGE_BAND: f32 = 0.25;
+
+impl DropZone {
+    /// The zone under a pointer at `(x, y)`, measured from the top-left of a pane of
+    /// `pane_size`. The outer [`DROP_EDGE_BAND`] of each side is that edge; where two bands
+    /// overlap at a corner, the side the pointer is proportionally nearer to wins. Everything
+    /// else is the middle.
+    pub fn at((x, y): (f32, f32), pane_size: Size) -> Self {
+        let sides = [
+            (Direction::Left, x / pane_size.width),
+            (Direction::Right, (pane_size.width - x) / pane_size.width),
+            (Direction::Up, y / pane_size.height),
+            (Direction::Down, (pane_size.height - y) / pane_size.height),
+        ];
+        sides
+            .into_iter()
+            .filter(|(_, share)| *share < DROP_EDGE_BAND)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(DropZone::Middle, |(direction, _)| DropZone::Edge(direction))
+    }
+}
+
 /// Why a command did nothing. The view reacts to it, for example with a flash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
