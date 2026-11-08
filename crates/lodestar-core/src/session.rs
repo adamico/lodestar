@@ -107,4 +107,24 @@ impl SessionStore {
     pub fn session(&self, id: SessionId) -> Option<&Session> {
         self.sessions.iter().find(|session| session.id == id)
     }
+
+    /// Start a new session in `project`: it waits for input with an empty Transcript.
+    pub fn create_session(&mut self, project: ProjectId) -> SessionId {
+        let id = SessionId(
+            self.sessions
+                .iter()
+                .map(|session| session.id.0 + 1)
+                .max()
+                .unwrap_or(0),
+        );
+        self.sessions.push(Session {
+            id,
+            title: String::new(),
+            project,
+            status: SessionStatus::WaitingForInput,
+            started_at: 0,
+            transcript: Transcript::default(),
+        });
+        id
+    }
 }
