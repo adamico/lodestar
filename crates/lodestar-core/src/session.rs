@@ -131,6 +131,17 @@ impl Transcript {
             None => false,
         }
     }
+
+    /// Give every pending tool call a note that its result will never come.
+    fn end_pending_calls(&mut self) {
+        for item in &mut self.items {
+            if let TranscriptItem::ToolCall(call) = item
+                && call.is_pending()
+            {
+                call.output = Some(NO_RESULT.to_owned());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -171,7 +182,26 @@ pub enum SessionUpdate {
         call_id: String,
         output: String,
     },
+    /// The session's Agent is gone, or never started, and `error` says why. Every pending
+    /// tool call gets a note that no result came, `error` becomes the Transcript's last item
+    /// (an Error item), and the session is done.
+    Ended { session: SessionId, error: String },
 }
+
+impl SessionUpdate {
+    /// The session this update happened to.
+    pub fn session(&self) -> SessionId {
+        match self {
+            Self::TranscriptItem { session, .. }
+            | Self::Status { session, .. }
+            | Self::ToolResult { session, .. }
+            | Self::Ended { session, .. } => *session,
+        }
+    }
+}
+
+/// The output a pending tool call gets when its session ends before the result arrives.
+const NO_RESULT: &str = "No result: the Agent exited.";
 
 /// Where sessions come from: fixtures in Milestone 1, real agents from Milestone 2.
 ///
@@ -338,6 +368,13 @@ impl SessionStore {
             } => {
                 if let Some(session) = self.session_mut(session) {
                     session.transcript.fill_tool_result(&call_id, output);
+                }
+            }
+            SessionUpdate::Ended { session, error } => {
+                if let Some(session) = self.session_mut(session) {
+                    session.transcript.end_pending_calls();
+                    session.transcript.push(TranscriptItem::Error(error));
+                    session.status = SessionStatus::Done;
                 }
             }
         }

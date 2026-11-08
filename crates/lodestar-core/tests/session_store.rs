@@ -472,6 +472,70 @@ mod updates {
     }
 
     #[test]
+    fn an_ended_session_is_done_with_its_error_last_and_no_call_left_pending() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let before = store
+            .session(SessionId(0))
+            .unwrap()
+            .transcript
+            .items()
+            .len();
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(0),
+            item: TranscriptItem::ToolCall(pending_call("toolu_1")),
+        });
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(0),
+            item: TranscriptItem::ToolCall(call_with("toolu_2", "4 passed")),
+        });
+
+        store.apply(SessionUpdate::Ended {
+            session: SessionId(0),
+            error: "claude exited (code 1).".into(),
+        });
+
+        let session = store.session(SessionId(0)).unwrap();
+        assert_eq!(session.status, SessionStatus::Done);
+        assert_eq!(
+            session.transcript.items()[before..],
+            [
+                TranscriptItem::ToolCall(call_with("toolu_1", "No result: the Agent exited.")),
+                TranscriptItem::ToolCall(call_with("toolu_2", "4 passed")),
+                TranscriptItem::Error("claude exited (code 1).".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_update_names_its_session() {
+        let updates = [
+            SessionUpdate::TranscriptItem {
+                session: SessionId(4),
+                item: TranscriptItem::Assistant("Hi".into()),
+            },
+            SessionUpdate::Status {
+                session: SessionId(4),
+                status: SessionStatus::Done,
+            },
+            SessionUpdate::ToolResult {
+                session: SessionId(4),
+                call_id: "toolu_1".into(),
+                output: "ok".into(),
+            },
+            SessionUpdate::Ended {
+                session: SessionId(4),
+                error: "gone".into(),
+            },
+        ];
+
+        assert!(
+            updates
+                .iter()
+                .all(|update| update.session() == SessionId(4))
+        );
+    }
+
+    #[test]
     fn a_tool_result_for_an_unknown_call_changes_nothing() {
         let mut store = SessionStore::load(&mut Fixtures);
         store.apply(SessionUpdate::TranscriptItem {
