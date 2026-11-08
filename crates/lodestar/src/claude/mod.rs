@@ -161,6 +161,12 @@ impl SessionSource for ClaudeSource {
             }),
         }
     }
+
+    /// Kill every Agent (dropping one kills it) and forget what they had to say.
+    fn shutdown(&mut self) {
+        self.agents.clear();
+        self.pending.clear();
+    }
 }
 
 #[cfg(test)]
@@ -375,6 +381,51 @@ mod tests {
                     status: SessionStatus::WaitingForInput
                 },
             ]
+        );
+        assert!(source.poll_updates(Duration::ZERO).is_empty());
+    }
+
+    /// Whether a process with `pid` is still around.
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutting_down_stops_every_agent_the_source_started() {
+        let pids = fake_dir("shutdown").join("pids");
+        let _ = fs::remove_file(&pids);
+        let program = fake_claude_doing(
+            "shutdown",
+            &format!("echo $$ >> '{}'\ncat > /dev/null\n", pids.display()),
+        );
+        let mut source = ClaudeSource::new(program.into());
+        source.start_agent(SessionId(1), &tmp_project()).unwrap();
+        source.start_agent(SessionId(2), &tmp_project()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while fs::read_to_string(&pids)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+            < 2
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pids = fs::read_to_string(&pids).unwrap();
+        let pids: Vec<&str> = pids.lines().collect();
+        assert_eq!(pids.len(), 2);
+        assert!(pids.iter().all(|pid| alive(pid)));
+
+        source.shutdown();
+
+        assert!(
+            pids.iter().all(|pid| !alive(pid)),
+            "an Agent survived shutdown"
         );
         assert!(source.poll_updates(Duration::ZERO).is_empty());
     }

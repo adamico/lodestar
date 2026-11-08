@@ -168,6 +168,10 @@ pub trait SessionSource {
     fn send_message(&mut self, session: SessionId, text: &str) {
         let _ = (session, text);
     }
+
+    /// Stop every Agent this source started, because the app is quitting. Nothing arrives
+    /// through `poll_updates` afterwards. Sources without Agents have nothing to stop.
+    fn shutdown(&mut self) {}
 }
 
 /// Every known Project and session.
