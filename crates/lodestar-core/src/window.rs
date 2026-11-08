@@ -8,6 +8,28 @@ use crate::session::SessionId;
 /// Width of the gap between two panes, in logical pixels.
 pub const DIVIDER_THICKNESS: f32 = 1.0;
 
+/// No pane may be smaller than this, in logical pixels. Commands that would make one are refused.
+pub const MIN_PANE_SIZE: Size = Size::new(320.0, 200.0);
+
+/// A side of a pane, as seen on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Why a command did nothing. The view reacts to it, for example with a flash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Refused {
+    /// A pane would have ended up smaller than [`MIN_PANE_SIZE`].
+    BelowMinimumSize,
+    /// The pane no longer exists.
+    NoSuchPane,
+}
+
 /// Identifies a pane for as long as it exists. Ids are never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaneId(u64);
@@ -171,6 +193,86 @@ impl WindowModel {
         self.next_pane_id += 1;
         self.panes.insert(pane, None);
         pane
+    }
+}
+
+/// Splitting and closing panes.
+impl WindowModel {
+    /// Split `pane` in the direction its shape suggests: a pane wider than tall splits side by
+    /// side, otherwise top and bottom. `area` is the pane-area size the window is laid out in.
+    ///
+    /// The new pane is empty and focused. Returns its id, or the refusal if either half would be
+    /// smaller than [`MIN_PANE_SIZE`].
+    pub fn split_auto(&mut self, pane: PaneId, area: Size) -> Result<PaneId, Refused> {
+        let rect = self.rect_of(pane, area).ok_or(Refused::NoSuchPane)?;
+        let direction = if rect.width > rect.height {
+            Direction::Right
+        } else {
+            Direction::Down
+        };
+        self.split(pane, direction, area)
+    }
+
+    /// Split `pane`, placing the new pane on its `direction` side. See [`Self::split_auto`].
+    pub fn split(
+        &mut self,
+        pane: PaneId,
+        direction: Direction,
+        area: Size,
+    ) -> Result<PaneId, Refused> {
+        let rect = self.rect_of(pane, area).ok_or(Refused::NoSuchPane)?;
+        let axis = match direction {
+            Direction::Left | Direction::Right => Axis::Horizontal,
+            Direction::Up | Direction::Down => Axis::Vertical,
+        };
+        let (first, _, second) = split_rect(rect, axis, 0.5);
+        if !fits_minimum(first) || !fits_minimum(second) {
+            return Err(Refused::BelowMinimumSize);
+        }
+
+        let new_pane = self.new_pane();
+        let new_first = matches!(direction, Direction::Left | Direction::Up);
+        self.root.split_leaf(pane, new_pane, axis, new_first);
+        self.focused = new_pane;
+        Ok(new_pane)
+    }
+
+    fn rect_of(&self, pane: PaneId, area: Size) -> Option<Rect> {
+        self.layout(area)
+            .panes
+            .into_iter()
+            .find(|p| p.pane == pane)
+            .map(|p| p.rect)
+    }
+}
+
+fn fits_minimum(rect: Rect) -> bool {
+    rect.width >= MIN_PANE_SIZE.width && rect.height >= MIN_PANE_SIZE.height
+}
+
+impl Node {
+    /// Replace the leaf `pane` with a split of `pane` and `new_pane`.
+    fn split_leaf(&mut self, pane: PaneId, new_pane: PaneId, axis: Axis, new_first: bool) {
+        match self {
+            Node::Pane(id) if *id == pane => {
+                let (first, second) = if new_first {
+                    (new_pane, pane)
+                } else {
+                    (pane, new_pane)
+                };
+                *self = Node::Split {
+                    axis,
+                    ratio: 0.5,
+                    first: Box::new(Node::Pane(first)),
+                    second: Box::new(Node::Pane(second)),
+                };
+            }
+            Node::Pane(_) => {}
+            Node::Split { first, second, .. } => {
+                first.split_leaf(pane, new_pane, axis, new_first);
+                second.split_leaf(pane, new_pane, axis, new_first);
+            }
+        }
     }
 }
 
