@@ -48,6 +48,11 @@ impl SidebarState {
         if self.visible { self.width } else { px(0.) }
     }
 
+    /// Whether the sidebar has keyboard focus.
+    pub fn is_focused(&self) -> bool {
+        self.selected.is_some()
+    }
+
     /// Give the keyboard back to the panes.
     pub fn blur(&mut self) {
         self.selected = None;

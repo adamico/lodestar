@@ -3,12 +3,14 @@
 //! It renders the window model and session store, and turns input into window-model commands.
 //! Layout rules live in the window model, not here.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::geometry::{Rect, Size};
+use lodestar_core::picker::PickerState;
 use lodestar_core::session::{SessionStatus, SessionStore};
 use lodestar_core::window::{Direction, PaneId, Refused, WindowModel};
 
@@ -30,6 +32,8 @@ pub struct MainWindow {
     pub(crate) sidebar: SidebarState,
     /// The pane whose last command was refused, while its flash lasts.
     flashing: Option<PaneId>,
+    /// Each empty pane's picker: its filter and selection. Absent means untouched.
+    pub(crate) pickers: HashMap<PaneId, PickerState>,
 }
 
 impl MainWindow {
@@ -41,6 +45,7 @@ impl MainWindow {
             mode: Mode::default(),
             sidebar: SidebarState::default(),
             flashing: None,
+            pickers: HashMap::new(),
         }
     }
 
@@ -76,12 +81,17 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// While the leader is pending, the next key is a command or ends the mode.
+    /// While the leader is pending, the next key is a command or ends the mode. Otherwise keys
+    /// go to the sidebar while it is focused, else to the focused pane's picker if that pane
+    /// is empty.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode == Mode::Normal && self.on_sidebar_key(event, cx) {
-            return;
-        }
         if self.mode != Mode::Leader {
+            if self.sidebar.is_focused() {
+                self.on_sidebar_key(event, cx);
+            } else if self.picker_key_down(event, cx) {
+                cx.stop_propagation();
+                cx.notify();
+            }
             return;
         }
         cx.stop_propagation();
@@ -220,6 +230,7 @@ impl MainWindow {
 
     fn render_pane(&self, pane: PaneId, focused: bool, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme();
+        let background = theme.background;
         let flashing = self.flashing == Some(pane);
         let (border, header_bg, header_fg) = if flashing {
             (theme.danger, theme.danger, gpui_kit::white())
@@ -268,24 +279,27 @@ impl MainWindow {
                 }))
                 .child("×"),
         );
-        let body = v_flex()
-            .flex_1()
-            .overflow_hidden()
-            .p_2()
-            .gap_2()
-            .text_sm()
-            .children(session.into_iter().flat_map(|session| {
-                session
-                    .transcript
-                    .items()
-                    .iter()
-                    .map(|item| div().child(item.clone()))
-            }));
+        let body = match session {
+            Some(session) => v_flex()
+                .flex_1()
+                .overflow_hidden()
+                .p_2()
+                .gap_2()
+                .text_sm()
+                .children(
+                    session
+                        .transcript
+                        .items()
+                        .iter()
+                        .map(|item| div().child(item.clone())),
+                ),
+            None => self.render_picker(pane, cx),
+        };
 
         v_flex()
             .border_1()
             .border_color(border)
-            .bg(theme.background)
+            .bg(background)
             .when(!focused, |this| this.opacity(UNFOCUSED_OPACITY))
             .on_mouse_down(
                 MouseButton::Left,
@@ -332,7 +346,7 @@ pub(crate) fn status_dot(color: Hsla) -> impl IntoElement {
 }
 
 /// A stable per-pane element id, so pane widgets keep their state across renders.
-fn pane_element_id(widget: &str, pane: PaneId) -> ElementId {
+pub(crate) fn pane_element_id(widget: &str, pane: PaneId) -> ElementId {
     ElementId::Name(format!("{widget}-{pane:?}").into())
 }
 
