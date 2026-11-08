@@ -188,6 +188,43 @@ impl WindowModel {
         self.panes.get(&pane).copied().flatten()
     }
 
+    /// The pane that shows `session`, if any pane does.
+    pub fn pane_showing(&self, session: SessionId) -> Option<PaneId> {
+        self.panes
+            .iter()
+            .find(|(_, shown)| **shown == Some(session))
+            .map(|(pane, _)| *pane)
+    }
+
+    /// Every session that some pane shows, in no particular order.
+    pub fn sessions_shown(&self) -> Vec<SessionId> {
+        self.panes.values().flatten().copied().collect()
+    }
+
+    /// The sessions among `all_sessions` that no pane shows, in the order given.
+    pub fn not_shown(&self, all_sessions: &[SessionId]) -> Vec<SessionId> {
+        all_sessions
+            .iter()
+            .copied()
+            .filter(|session| self.pane_showing(*session).is_none())
+            .collect()
+    }
+
+    /// Show `session` in `pane`, as a sidebar click does.
+    ///
+    /// If some pane already shows the session, that pane is focused instead, so a session
+    /// is never in two panes. Otherwise the session fills `pane`, replacing whatever it showed;
+    /// the replaced session is then not shown anywhere. A pane that no longer exists is ignored.
+    pub fn open_session(&mut self, session: SessionId, pane: PaneId) {
+        if let Some(showing) = self.pane_showing(session) {
+            self.focused = showing;
+            return;
+        }
+        if let Some(slot) = self.panes.get_mut(&pane) {
+            *slot = Some(session);
+        }
+    }
+
     fn new_pane(&mut self) -> PaneId {
         let pane = PaneId(self.next_pane_id);
         self.next_pane_id += 1;

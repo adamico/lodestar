@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use lodestar_core::session::{
     InitialSessions, Project, ProjectId, Session, SessionId, SessionSource, SessionStatus,
+    Transcript,
 };
 use serde::Deserialize;
 
@@ -38,6 +39,9 @@ struct FixtureSession {
     project: String,
     status: FixtureStatus,
     started_at: u64,
+    /// Plain-text Transcript items, oldest first.
+    #[serde(default)]
+    transcript: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +83,7 @@ impl FixtureFile {
                         FixtureStatus::Done => SessionStatus::Done,
                     },
                     started_at: session.started_at,
+                    transcript: Transcript::new(session.transcript),
                 }
             })
             .collect();

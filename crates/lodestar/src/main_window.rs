@@ -10,7 +10,7 @@ use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::geometry::{Rect, Size};
-use lodestar_core::session::{SessionStatus, SessionStore};
+use lodestar_core::session::{Session, SessionStatus, SessionStore};
 use lodestar_core::window::{Direction, PaneId, Refused, WindowModel};
 
 use crate::leader::{CancelLeader, LEADER_FLAG, Leader, LeaderCommand, Mode, WINDOW_CONTEXT};
@@ -22,6 +22,8 @@ const ACCENT: u32 = 0x3b82f6;
 const UNFOCUSED_OPACITY: f32 = 0.6;
 /// How long a pane flashes after a refused command.
 const FLASH_DURATION: Duration = Duration::from_millis(150);
+/// Marks a sidebar row whose session is shown in a pane.
+const SHOWN_MARKER: &str = "\u{25A3}";
 
 pub struct MainWindow {
     window_model: WindowModel,
@@ -169,25 +171,49 @@ impl MainWindow {
             )
     }
 
-    fn render_sidebar(&self, cx: &App) -> impl IntoElement {
-        let groups = self.sessions.projects().iter().map(|project| {
-            let items = self
-                .sessions
-                .sessions_in(project.id)
-                .into_iter()
-                .map(|session| {
-                    let color = status_color(session.status, cx);
-                    SidebarMenuItem::new(session.title.clone())
-                        .suffix(move |_, _| status_dot(color))
-                });
-            SidebarGroup::new(project.name.clone()).child(SidebarMenu::new().children(items))
-        });
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let groups: Vec<SidebarGroup<SidebarMenu>> = self
+            .sessions
+            .projects()
+            .iter()
+            .map(|project| {
+                let items: Vec<SidebarMenuItem> = self
+                    .sessions
+                    .sessions_in(project.id)
+                    .into_iter()
+                    .map(|session| self.render_sidebar_row(session, cx))
+                    .collect();
+                SidebarGroup::new(project.name.clone()).child(SidebarMenu::new().children(items))
+            })
+            .collect();
 
         Sidebar::new("sessions")
             .collapsible(false)
             .w(SIDEBAR_WIDTH)
             .header(div().px_2().text_sm().font_semibold().child("Sessions"))
             .children(groups)
+    }
+
+    /// One session in the sidebar: title, a marker if a pane shows it, and its status dot.
+    /// Clicking it opens the session in the focused pane.
+    fn render_sidebar_row(&self, session: &Session, cx: &mut Context<Self>) -> SidebarMenuItem {
+        let id = session.id;
+        let shown = self.window_model.pane_showing(id).is_some();
+        let color = status_color(session.status, cx);
+        SidebarMenuItem::new(session.title.clone())
+            .active(shown)
+            .suffix(move |_, _| {
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .when(shown, |this| this.child(SHOWN_MARKER))
+                    .child(status_dot(color))
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let pane = this.window_model.focused_pane();
+                this.window_model.open_session(id, pane);
+                cx.notify();
+            }))
     }
 
     fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -226,14 +252,59 @@ impl MainWindow {
         } else {
             (theme.border, theme.secondary, theme.muted_foreground)
         };
-        let title = match self
+        let session = self
             .window_model
             .session_in(pane)
-            .and_then(|id| self.sessions.session(id))
-        {
-            Some(session) => session.title.clone(),
-            None => "Empty".to_owned(),
+            .and_then(|id| self.sessions.session(id));
+        let header = h_flex()
+            .h(PANE_HEADER_HEIGHT)
+            .flex_shrink_0()
+            .px_2()
+            .gap_2()
+            .items_center()
+            .bg(header_bg)
+            .text_color(header_fg)
+            .text_sm();
+        let header = match session {
+            Some(session) => {
+                let project = self
+                    .sessions
+                    .project(session.project)
+                    .map(|project| project.name.clone())
+                    .unwrap_or_default();
+                header
+                    .child(status_dot(status_color(session.status, cx)))
+                    .child(div().font_semibold().child(session.title.clone()))
+                    .child(div().text_xs().opacity(0.8).child(project))
+            }
+            None => header.child("Empty"),
         };
+        let header = header.child(div().flex_1()).child(
+            div()
+                .id(pane_element_id("close-pane", pane))
+                .px_1()
+                .rounded_sm()
+                .cursor_pointer()
+                .hover(|this| this.bg(gpui_kit::white().opacity(0.2)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.window_model.close(pane);
+                    cx.notify();
+                }))
+                .child("×"),
+        );
+        let body = v_flex()
+            .flex_1()
+            .overflow_hidden()
+            .p_2()
+            .gap_2()
+            .text_sm()
+            .children(session.into_iter().flat_map(|session| {
+                session
+                    .transcript
+                    .items()
+                    .iter()
+                    .map(|item| div().child(item.clone()))
+            }));
 
         v_flex()
             .border_1()
@@ -247,31 +318,8 @@ impl MainWindow {
                     cx.notify();
                 }),
             )
-            .child(
-                h_flex()
-                    .h(PANE_HEADER_HEIGHT)
-                    .flex_shrink_0()
-                    .px_2()
-                    .bg(header_bg)
-                    .text_color(header_fg)
-                    .text_sm()
-                    .justify_between()
-                    .child(title)
-                    .child(
-                        div()
-                            .id(pane_element_id("close-pane", pane))
-                            .px_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .hover(|this| this.bg(gpui_kit::white().opacity(0.2)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.window_model.close(pane);
-                                cx.notify();
-                            }))
-                            .child("×"),
-                    ),
-            )
-            .child(div().flex_1())
+            .child(header)
+            .child(body)
     }
 }
 
