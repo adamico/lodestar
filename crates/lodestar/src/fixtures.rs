@@ -7,8 +7,11 @@ use lodestar_core::session::{
     InitialSessions, Project, ProjectId, Session, SessionId, SessionSource, SessionStatus,
     SessionUpdate, ToolCall, Transcript, TranscriptItem,
 };
-use lodestar_core::stream::UpdateSchedule;
 use serde::Deserialize;
+
+use self::schedule::UpdateSchedule;
+
+mod schedule;
 
 const SESSIONS: &str = include_str!("../fixtures/sessions.json");
 
@@ -271,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn at_least_two_fixture_sessions_stream_from_a_running_mid_conversation_start() {
+    fn at_least_two_fixture_sessions_stream_from_a_running_mid_transcript_start() {
         let streamed = streamed(&mut FixtureSource::new());
 
         assert!(streamed.len() >= 2, "{} streaming sessions", streamed.len());
