@@ -66,3 +66,43 @@ impl PickerList {
             .collect()
     }
 }
+
+/// What one empty pane's picker remembers: the typed filter and the selected row.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PickerState {
+    filter: String,
+    selected: usize,
+}
+
+impl PickerState {
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    /// The index of the selected row in [`PickerList::entries`].
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// Append `c` to the filter; the selection returns to the first row.
+    pub fn type_char(&mut self, c: char) {
+        self.filter.push(c);
+        self.selected = 0;
+    }
+
+    /// Delete the last filter character; the selection returns to the first row.
+    pub fn backspace(&mut self) {
+        self.filter.pop();
+        self.selected = 0;
+    }
+
+    /// Select the next of `len` rows, stopping at the last.
+    pub fn move_down(&mut self, len: usize) {
+        self.selected = (self.selected + 1).min(len.saturating_sub(1));
+    }
+
+    /// Select the previous of `len` rows, stopping at the first.
+    pub fn move_up(&mut self, len: usize) {
+        self.selected = self.selected.saturating_sub(1).min(len.saturating_sub(1));
+    }
+}

@@ -1,5 +1,6 @@
 mod fixtures;
 mod main_window;
+mod picker;
 
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
@@ -19,8 +20,10 @@ fn main() {
             app_id: Some("lodestar".into()),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| MainWindow::new(sessions)))
-            .expect("failed to open the Lodestar window");
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| MainWindow::new(sessions, window, cx))
+        })
+        .expect("failed to open the Lodestar window");
         cx.activate(true);
     });
 }

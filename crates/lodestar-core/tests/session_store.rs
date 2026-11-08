@@ -90,7 +90,6 @@ mod new_sessions {
     }
 }
 
-
 mod naming {
     use super::new_sessions::Fixtures;
     use lodestar_core::session::{ProjectId, SessionStore};
@@ -102,8 +101,14 @@ mod naming {
         let third_in_lodestar = store.create_session(ProjectId(0));
         let first_in_dotfiles = store.create_session(ProjectId(1));
 
-        assert_eq!(store.session(third_in_lodestar).unwrap().title, "lodestar #3");
-        assert_eq!(store.session(first_in_dotfiles).unwrap().title, "dotfiles #1");
+        assert_eq!(
+            store.session(third_in_lodestar).unwrap().title,
+            "lodestar #3"
+        );
+        assert_eq!(
+            store.session(first_in_dotfiles).unwrap().title,
+            "dotfiles #1"
+        );
     }
 }
 
@@ -258,5 +263,37 @@ mod picker_filter {
         );
         let list = PickerList::new(&store, &model, "ci");
         assert_eq!(list.sessions(), [SessionId(1)]);
+    }
+}
+
+mod picker_selection {
+    use lodestar_core::picker::PickerState;
+
+    #[test]
+    fn moving_down_and_up_stays_within_the_list() {
+        let mut picker = PickerState::default();
+        assert_eq!(picker.selected(), 0);
+
+        picker.move_up(3);
+        assert_eq!(picker.selected(), 0);
+        picker.move_down(3);
+        picker.move_down(3);
+        picker.move_down(3);
+        assert_eq!(picker.selected(), 2);
+        picker.move_up(3);
+        assert_eq!(picker.selected(), 1);
+    }
+
+    #[test]
+    fn typing_builds_the_filter_and_resets_the_selection() {
+        let mut picker = PickerState::default();
+        picker.move_down(5);
+
+        picker.type_char('a');
+        picker.type_char('b');
+        picker.backspace();
+
+        assert_eq!(picker.filter(), "a");
+        assert_eq!(picker.selected(), 0);
     }
 }

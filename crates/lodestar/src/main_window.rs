@@ -3,11 +3,14 @@
 //! It renders the window model and session store, and turns input into window-model commands.
 //! Layout rules live in the window model, not here.
 
+use std::collections::HashMap;
+
 use gpui_kit::component::sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::geometry::{Rect, Size};
+use lodestar_core::picker::PickerState;
 use lodestar_core::session::{Session, SessionStatus, SessionStore};
 use lodestar_core::window::{PaneId, WindowModel};
 
@@ -20,15 +23,30 @@ const UNFOCUSED_OPACITY: f32 = 0.6;
 const SHOWN_MARKER: &str = "\u{25A3}";
 
 pub struct MainWindow {
-    window_model: WindowModel,
-    sessions: SessionStore,
+    pub(crate) window_model: WindowModel,
+    pub(crate) sessions: SessionStore,
+    /// Each empty pane's picker: its filter and selection. Absent means untouched.
+    pub(crate) pickers: HashMap<PaneId, PickerState>,
+    /// Keys go to the window as a whole; the view routes them to the focused pane.
+    pub(crate) focus_handle: FocusHandle,
 }
 
 impl MainWindow {
-    pub fn new(sessions: SessionStore) -> Self {
+    pub fn new(sessions: SessionStore, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
         Self {
             window_model: WindowModel::new(),
             sessions,
+            pickers: HashMap::new(),
+            focus_handle,
+        }
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_key_down(event, cx) {
+            cx.stop_propagation();
+            cx.notify();
         }
     }
 
@@ -107,6 +125,7 @@ impl MainWindow {
 
     fn render_pane(&self, pane: PaneId, focused: bool, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme();
+        let background = theme.background;
         let (border, header_bg, header_fg) = if focused {
             (rgb(ACCENT).into(), rgb(ACCENT).into(), gpui_kit::white())
         } else {
@@ -139,24 +158,27 @@ impl MainWindow {
             }
             None => header.child("Empty"),
         };
-        let body = v_flex()
-            .flex_1()
-            .overflow_hidden()
-            .p_2()
-            .gap_2()
-            .text_sm()
-            .children(session.into_iter().flat_map(|session| {
-                session
-                    .transcript
-                    .items()
-                    .iter()
-                    .map(|item| div().child(item.clone()))
-            }));
+        let body = match session {
+            Some(session) => v_flex()
+                .flex_1()
+                .overflow_hidden()
+                .p_2()
+                .gap_2()
+                .text_sm()
+                .children(
+                    session
+                        .transcript
+                        .items()
+                        .iter()
+                        .map(|item| div().child(item.clone())),
+                ),
+            None => self.render_picker(pane, cx),
+        };
 
         v_flex()
             .border_1()
             .border_color(border)
-            .bg(theme.background)
+            .bg(background)
             .when(!focused, |this| this.opacity(UNFOCUSED_OPACITY))
             .on_mouse_down(
                 MouseButton::Left,
@@ -174,6 +196,8 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .size_full()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_sidebar(cx))
@@ -181,7 +205,7 @@ impl Render for MainWindow {
     }
 }
 
-fn status_color(status: SessionStatus, cx: &App) -> Hsla {
+pub(crate) fn status_color(status: SessionStatus, cx: &App) -> Hsla {
     match status {
         SessionStatus::Running => cx.theme().success,
         SessionStatus::WaitingForInput => cx.theme().warning,
@@ -189,7 +213,7 @@ fn status_color(status: SessionStatus, cx: &App) -> Hsla {
     }
 }
 
-fn status_dot(color: Hsla) -> impl IntoElement {
+pub(crate) fn status_dot(color: Hsla) -> impl IntoElement {
     div().size_2().rounded_full().bg(color)
 }
 

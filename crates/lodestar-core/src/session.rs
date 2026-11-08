@@ -83,7 +83,10 @@ pub struct SessionStore {
 impl SessionStore {
     pub fn load(source: &mut impl SessionSource) -> Self {
         let InitialSessions { projects, sessions } = source.initial_sessions();
-        let recent_folders = projects.iter().map(|project| project.path.clone()).collect();
+        let recent_folders = projects
+            .iter()
+            .map(|project| project.path.clone())
+            .collect();
         Self {
             projects,
             sessions,
