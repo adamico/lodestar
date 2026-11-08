@@ -28,6 +28,9 @@ const USER_MARKER: &str = "You";
 const ERROR_MARKER: &str = "Error";
 const COLLAPSED_MARKER: &str = "\u{25B8}";
 const EXPANDED_MARKER: &str = "\u{25BE}";
+/// Shown after a pending tool call's headline, until its result arrives.
+const PENDING_MARKER: &str = "\u{22EF} pending";
+const PENDING_OUTPUT: &str = "(pending)";
 const JUMP_TO_LATEST: &str = "\u{2193} Jump to latest";
 
 actions!(
@@ -370,7 +373,8 @@ fn render_assistant(pane: PaneId, ix: usize, markdown: &str) -> impl IntoElement
         .selectable(true)
 }
 
-/// A tool call: its headline, and its input and output in monospace when expanded.
+/// A tool call: its headline (with a pending marker until the result arrives), and its input
+/// and output in monospace when expanded.
 fn render_tool_call(
     pane: PaneId,
     ix: usize,
@@ -400,7 +404,24 @@ fn render_tool_call(
             div()
                 .font_family(theme.mono_font_family.clone())
                 .child(call.headline()),
-        );
+        )
+        .when(call.is_pending(), |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .flex_shrink_0()
+                    .text_color(theme.warning)
+                    .child(PENDING_MARKER),
+            )
+        });
+    let output = match &call.output {
+        Some(output) => monospace_block("Output", output, cx).into_any_element(),
+        None => div()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child(PENDING_OUTPUT)
+            .into_any_element(),
+    };
 
     Collapsible::new()
         .open(expanded)
@@ -416,7 +437,7 @@ fn render_tool_call(
                 .border_t_1()
                 .border_color(theme.border)
                 .child(monospace_block("Input", &call.input, cx))
-                .child(monospace_block("Output", &call.output, cx)),
+                .child(output),
         )
 }
 
