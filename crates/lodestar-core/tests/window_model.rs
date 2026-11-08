@@ -453,3 +453,110 @@ mod focus_and_swap {
         assert_eq!(model.focused_pane(), right);
     }
 }
+
+mod focus_edges {
+    use lodestar_core::geometry::Size;
+    use lodestar_core::window::{Direction, WindowModel};
+
+    const AREA: Size = Size::new(1601.0, 600.0);
+
+    #[test]
+    fn focus_left_at_the_window_edge_does_nothing() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+
+        let moved = model.focus_in_direction(Direction::Left, AREA);
+
+        assert!(!moved);
+        assert_eq!(model.focused_pane(), left);
+    }
+
+    #[test]
+    fn focus_up_and_down_with_nothing_above_or_below_does_nothing() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+
+        assert!(!model.focus_in_direction(Direction::Up, AREA));
+        assert!(!model.focus_in_direction(Direction::Down, AREA));
+        assert_eq!(model.focused_pane(), left);
+    }
+}
+
+/// Left pane full height; right column split top/bottom, the bottom one split again.
+/// Panes are named by position: `a` left, `b1` top right, `b2a` and `b2b` below it.
+mod focus_across_uneven_layouts {
+    use lodestar_core::geometry::Size;
+    use lodestar_core::window::{Direction, PaneId, WindowModel};
+
+    const AREA: Size = Size::new(1601.0, 1000.0);
+
+    struct Panes {
+        a: PaneId,
+        b1: PaneId,
+        b2a: PaneId,
+        b2b: PaneId,
+    }
+
+    fn uneven(model: &mut WindowModel) -> Panes {
+        let layout = model.layout(AREA);
+        let (a, b1) = (layout.panes[0].pane, layout.panes[1].pane);
+        let b2a = model.split(b1, Direction::Down, AREA).expect("fits");
+        let b2b = model.split(b2a, Direction::Down, AREA).expect("fits");
+        Panes { a, b1, b2a, b2b }
+    }
+
+    #[test]
+    fn focus_left_from_a_small_lower_right_pane_lands_on_the_tall_left_pane() {
+        let mut model = WindowModel::new();
+        let panes = uneven(&mut model);
+        model.focus(panes.b2b);
+
+        assert!(model.focus_in_direction(Direction::Left, AREA));
+        assert_eq!(model.focused_pane(), panes.a);
+    }
+
+    #[test]
+    fn focus_up_from_the_lowest_pane_lands_on_the_pane_directly_above_not_the_top_one() {
+        let mut model = WindowModel::new();
+        let panes = uneven(&mut model);
+        model.focus(panes.b2b);
+
+        assert!(model.focus_in_direction(Direction::Up, AREA));
+        assert_eq!(model.focused_pane(), panes.b2a);
+        assert!(model.focus_in_direction(Direction::Up, AREA));
+        assert_eq!(model.focused_pane(), panes.b1);
+        assert!(!model.focus_in_direction(Direction::Up, AREA));
+    }
+
+    #[test]
+    fn focus_right_from_the_tall_left_pane_lands_on_the_right_pane_level_with_its_centre() {
+        // The left pane's centre is level with the divider between the top-right pane and the
+        // lower two; the upper of the two equally close panes wins.
+        let mut model = WindowModel::new();
+        let panes = uneven(&mut model);
+        model.focus(panes.a);
+
+        assert!(model.focus_in_direction(Direction::Right, AREA));
+        assert_eq!(model.focused_pane(), panes.b1);
+    }
+
+    #[test]
+    fn focus_right_from_a_lower_left_pane_lands_on_the_lower_right_pane_level_with_it() {
+        let mut model = WindowModel::new();
+        let panes = uneven(&mut model);
+        // Split the left pane too, so its lower half is level with the two small right panes.
+        let a2 = model.split(panes.a, Direction::Down, AREA).expect("fits");
+        model.focus(a2);
+
+        assert!(model.focus_in_direction(Direction::Right, AREA));
+        assert_eq!(model.focused_pane(), panes.b2a);
+        model.focus(panes.a);
+        assert!(model.focus_in_direction(Direction::Right, AREA));
+        assert_eq!(model.focused_pane(), panes.b1);
+        assert!(model.focus_in_direction(Direction::Left, AREA));
+        assert_eq!(model.focused_pane(), panes.a);
+        model.focus(panes.b2b);
+        assert!(model.focus_in_direction(Direction::Left, AREA));
+        assert_eq!(model.focused_pane(), a2);
+    }
+}

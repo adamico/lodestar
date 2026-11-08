@@ -305,8 +305,10 @@ impl WindowModel {
 /// Moving focus between neighbouring panes.
 impl WindowModel {
     /// The pane on the `direction` side of `pane`, judged from the layout in a pane area of
-    /// `area`: the pane under a point just past `pane`'s edge, level with its centre. `None` at
-    /// the window edge or when `pane` does not exist.
+    /// `area`: probe a point just past `pane`'s edge, level with its centre, and take the pane
+    /// there. When the probe lands on a divider, the nearer of the panes on either side of it
+    /// wins, the upper or left one on a tie. `None` at the window edge or when `pane` does not
+    /// exist.
     pub fn neighbour_in_direction(
         &self,
         pane: PaneId,
@@ -316,17 +318,27 @@ impl WindowModel {
         let layout = self.layout(area);
         let rect = layout.panes.iter().find(|p| p.pane == pane)?.rect;
         let probe = DIVIDER_THICKNESS + 1.0;
-        let (x, y) = match direction {
+        let (along, level) = match direction {
             Direction::Left => (rect.x - probe, rect.y + rect.height / 2.0),
             Direction::Right => (rect.x + rect.width + probe, rect.y + rect.height / 2.0),
-            Direction::Up => (rect.x + rect.width / 2.0, rect.y - probe),
-            Direction::Down => (rect.x + rect.width / 2.0, rect.y + rect.height + probe),
+            Direction::Up => (rect.y - probe, rect.x + rect.width / 2.0),
+            Direction::Down => (rect.y + rect.height + probe, rect.x + rect.width / 2.0),
         };
+        let sideways = matches!(direction, Direction::Left | Direction::Right);
         layout
             .panes
             .iter()
-            .find(|p| contains(p.rect, x, y))
-            .map(|p| p.pane)
+            .filter(|p| p.pane != pane)
+            .filter_map(|p| {
+                let (span, cross) = if sideways {
+                    ((p.rect.x, p.rect.width), (p.rect.y, p.rect.height))
+                } else {
+                    ((p.rect.y, p.rect.height), (p.rect.x, p.rect.width))
+                };
+                within(span, along).then(|| (distance(cross, level), p.pane))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, pane)| pane)
     }
 
     /// Move focus to the pane on the `direction` side of the focused pane. Returns whether focus
@@ -342,8 +354,14 @@ impl WindowModel {
     }
 }
 
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+/// Whether `at` lies inside the interval `(start, length)`.
+fn within((start, length): (f32, f32), at: f32) -> bool {
+    at >= start && at < start + length
+}
+
+/// How far `at` is from the interval `(start, length)`; zero inside it.
+fn distance((start, length): (f32, f32), at: f32) -> f32 {
+    (start - at).max(at - (start + length)).max(0.0)
 }
 
 fn fits_minimum(rect: Rect) -> bool {
