@@ -1,6 +1,7 @@
 mod fixtures;
 mod leader;
 mod main_window;
+mod sidebar_view;
 
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;

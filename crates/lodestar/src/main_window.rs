@@ -5,12 +5,11 @@
 
 use std::time::Duration;
 
-use gpui_kit::component::sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::geometry::{Point, Rect, Size};
-use lodestar_core::session::{Session, SessionStatus, SessionStore};
+use lodestar_core::session::{SessionStatus, SessionStore};
 use lodestar_core::window::{
     Axis, Direction, DividerId, DividerLayout, PaneId, Refused, WindowModel,
 };
@@ -19,24 +18,23 @@ use crate::leader::{
     CancelLeader, Hints, LEADER_FLAG, Leader, LeaderCommand, Mode, RESIZE_FLAG, RESIZE_STEP,
     WINDOW_CONTEXT, resize_direction,
 };
+use crate::sidebar_view::SidebarState;
 
-const SIDEBAR_WIDTH: Pixels = px(255.);
 const PANE_HEADER_HEIGHT: Pixels = px(30.);
 /// Lodestar's one accent colour: marks the focused pane.
 const ACCENT: u32 = 0x3b82f6;
 const UNFOCUSED_OPACITY: f32 = 0.6;
 /// How long a pane flashes after a refused command.
 const FLASH_DURATION: Duration = Duration::from_millis(150);
-/// Marks a sidebar row whose session is shown in a pane.
-const SHOWN_MARKER: &str = "\u{25A3}";
 /// How wide the grab band around a divider is, in logical pixels.
 const DIVIDER_GRAB_WIDTH: Pixels = px(7.);
 
 pub struct MainWindow {
-    window_model: WindowModel,
-    sessions: SessionStore,
+    pub(crate) window_model: WindowModel,
+    pub(crate) sessions: SessionStore,
     focus_handle: FocusHandle,
     mode: Mode,
+    pub(crate) sidebar: SidebarState,
     /// The pane whose last command was refused, while its flash lasts.
     flashing: Option<PaneId>,
     /// The divider being dragged with the mouse, if any.
@@ -50,6 +48,7 @@ impl MainWindow {
             sessions,
             focus_handle: cx.focus_handle(),
             mode: Mode::default(),
+            sidebar: SidebarState::default(),
             flashing: None,
             dragging: None,
         }
@@ -59,11 +58,11 @@ impl MainWindow {
         self.focus_handle.clone()
     }
 
-    /// The size of the pane area: the window minus the sidebar.
-    fn pane_area(window: &Window) -> Size {
+    /// The size of the pane area: the window minus the sidebar (all of it when hidden).
+    fn pane_area(&self, window: &Window) -> Size {
         let viewport = window.viewport_size();
         Size::new(
-            f32::from(viewport.width - SIDEBAR_WIDTH).max(0.),
+            f32::from(viewport.width - self.sidebar.width()).max(0.),
             f32::from(viewport.height),
         )
     }
@@ -92,6 +91,9 @@ impl MainWindow {
     /// While the leader is pending, the next key is a command or ends the mode. In resize mode,
     /// `h`/`j`/`k`/`l` keep resizing until `esc` (bound to [`CancelLeader`]).
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == Mode::Normal && self.on_sidebar_key(event, cx) {
+            return;
+        }
         match self.mode {
             Mode::Normal => {}
             Mode::Leader => {
@@ -113,7 +115,7 @@ impl MainWindow {
 
     /// One keyboard resize step toward `direction`; a refusal flashes the focused pane.
     fn resize(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
-        let area = Self::pane_area(window);
+        let area = self.pane_area(window);
         if let Err(refused) = self
             .window_model
             .resize_in_direction(direction, RESIZE_STEP, area)
@@ -125,7 +127,10 @@ impl MainWindow {
 
     fn run(&mut self, command: LeaderCommand, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.window_model.focused_pane();
-        let area = Self::pane_area(window);
+        let area = self.pane_area(window);
+        if command != LeaderCommand::FocusSidebar {
+            self.sidebar.blur();
+        }
         let result = match command {
             LeaderCommand::SplitAuto => self.window_model.split_auto(pane, area).map(|_| ()),
             LeaderCommand::SplitRight => self
@@ -142,6 +147,22 @@ impl MainWindow {
             }
             LeaderCommand::Resize => {
                 self.mode = Mode::Resize;
+                Ok(())
+            }
+            LeaderCommand::Focus(direction) => {
+                self.window_model.focus_in_direction(direction, area);
+                Ok(())
+            }
+            LeaderCommand::Swap(direction) => {
+                self.window_model.swap_in_direction(direction, area);
+                Ok(())
+            }
+            LeaderCommand::FocusSidebar => {
+                self.focus_sidebar();
+                Ok(())
+            }
+            LeaderCommand::ToggleSidebar => {
+                self.toggle_sidebar();
                 Ok(())
             }
         };
@@ -208,53 +229,8 @@ impl MainWindow {
             )
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let groups: Vec<SidebarGroup<SidebarMenu>> = self
-            .sessions
-            .projects()
-            .iter()
-            .map(|project| {
-                let items: Vec<SidebarMenuItem> = self
-                    .sessions
-                    .sessions_in(project.id)
-                    .into_iter()
-                    .map(|session| self.render_sidebar_row(session, cx))
-                    .collect();
-                SidebarGroup::new(project.name.clone()).child(SidebarMenu::new().children(items))
-            })
-            .collect();
-
-        Sidebar::new("sessions")
-            .collapsible(false)
-            .w(SIDEBAR_WIDTH)
-            .header(div().px_2().text_sm().font_semibold().child("Sessions"))
-            .children(groups)
-    }
-
-    /// One session in the sidebar: title, a marker if a pane shows it, and its status dot.
-    /// Clicking it opens the session in the focused pane.
-    fn render_sidebar_row(&self, session: &Session, cx: &mut Context<Self>) -> SidebarMenuItem {
-        let id = session.id;
-        let shown = self.window_model.pane_showing(id).is_some();
-        let color = status_color(session.status, cx);
-        SidebarMenuItem::new(session.title.clone())
-            .active(shown)
-            .suffix(move |_, _| {
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .when(shown, |this| this.child(SHOWN_MARKER))
-                    .child(status_dot(color))
-            })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let pane = this.window_model.focused_pane();
-                this.window_model.open_session(id, pane);
-                cx.notify();
-            }))
-    }
-
     fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let layout = self.window_model.layout(Self::pane_area(window));
+        let layout = self.window_model.layout(self.pane_area(window));
         let focused = self.window_model.focused_pane();
 
         div()
@@ -326,10 +302,10 @@ impl MainWindow {
             return;
         }
         let position = Point::new(
-            f32::from(event.position.x - SIDEBAR_WIDTH),
+            f32::from(event.position.x - self.sidebar.width()),
             f32::from(event.position.y),
         );
-        let area = Self::pane_area(window);
+        let area = self.pane_area(window);
         if self
             .window_model
             .drag_divider(divider, position, area)
@@ -447,15 +423,19 @@ impl Render for MainWindow {
                         cx.listener(|this, _, _, cx| this.end_drag(cx)),
                     )
             })
+            .when(self.sidebar.is_dragging(), |this| {
+                this.on_mouse_move(cx.listener(Self::on_sidebar_drag_move))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_sidebar_drag_end))
+            })
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(self.render_sidebar(cx))
+            .children(self.render_sidebar(cx))
             .child(self.render_panes(window, cx))
     }
 }
 
-fn status_color(status: SessionStatus, cx: &App) -> Hsla {
+pub(crate) fn status_color(status: SessionStatus, cx: &App) -> Hsla {
     match status {
         SessionStatus::Running => cx.theme().success,
         SessionStatus::WaitingForInput => cx.theme().warning,
@@ -463,7 +443,7 @@ fn status_color(status: SessionStatus, cx: &App) -> Hsla {
     }
 }
 
-fn status_dot(color: Hsla) -> impl IntoElement {
+pub(crate) fn status_dot(color: Hsla) -> impl IntoElement {
     div().size_2().rounded_full().bg(color)
 }
 

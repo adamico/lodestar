@@ -574,6 +574,109 @@ impl Node {
     }
 }
 
+/// Moving focus between neighbouring panes.
+impl WindowModel {
+    /// The pane on the `direction` side of `pane`, judged from the layout in a pane area of
+    /// `area`: probe a point just past `pane`'s edge, level with its centre, and take the pane
+    /// there. When the probe lands on a divider, the nearer of the panes on either side of it
+    /// wins, the upper or left one on a tie. `None` at the window edge or when `pane` does not
+    /// exist.
+    pub fn neighbour_in_direction(
+        &self,
+        pane: PaneId,
+        direction: Direction,
+        area: Size,
+    ) -> Option<PaneId> {
+        let layout = self.layout(area);
+        let rect = layout.panes.iter().find(|p| p.pane == pane)?.rect;
+        let probe = DIVIDER_THICKNESS + 1.0;
+        let (along, level) = match direction {
+            Direction::Left => (rect.x - probe, rect.y + rect.height / 2.0),
+            Direction::Right => (rect.x + rect.width + probe, rect.y + rect.height / 2.0),
+            Direction::Up => (rect.y - probe, rect.x + rect.width / 2.0),
+            Direction::Down => (rect.y + rect.height + probe, rect.x + rect.width / 2.0),
+        };
+        let sideways = matches!(direction, Direction::Left | Direction::Right);
+        layout
+            .panes
+            .iter()
+            .filter(|p| p.pane != pane)
+            .filter_map(|p| {
+                let (span, cross) = if sideways {
+                    ((p.rect.x, p.rect.width), (p.rect.y, p.rect.height))
+                } else {
+                    ((p.rect.y, p.rect.height), (p.rect.x, p.rect.width))
+                };
+                within(span, along).then(|| (distance(cross, level), p.pane))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, pane)| pane)
+    }
+
+    /// Move focus to the pane on the `direction` side of the focused pane. Returns whether focus
+    /// moved; it does not at the window edge.
+    pub fn focus_in_direction(&mut self, direction: Direction, area: Size) -> bool {
+        match self.neighbour_in_direction(self.focused, direction, area) {
+            Some(neighbour) => {
+                self.focused = neighbour;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Swapping panes.
+impl WindowModel {
+    /// Exchange the places of panes `a` and `b` in the layout. Each keeps its id and the session
+    /// it shows, so the sessions trade places on screen, and focus follows the focused pane.
+    /// Does nothing if either pane no longer exists.
+    pub fn swap(&mut self, a: PaneId, b: PaneId) {
+        if a == b || !self.panes.contains_key(&a) || !self.panes.contains_key(&b) {
+            return;
+        }
+        self.root.swap_leaves(a, b);
+    }
+
+    /// Swap the focused pane with its neighbour on the `direction` side (see
+    /// [`Self::neighbour_in_direction`]); focus stays with the moved pane. Returns whether a swap
+    /// happened; none does at the window edge.
+    pub fn swap_in_direction(&mut self, direction: Direction, area: Size) -> bool {
+        match self.neighbour_in_direction(self.focused, direction, area) {
+            Some(neighbour) => {
+                self.swap(self.focused, neighbour);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Node {
+    /// Relabel the leaf `a` as `b` and the leaf `b` as `a`.
+    fn swap_leaves(&mut self, a: PaneId, b: PaneId) {
+        match self {
+            Node::Pane(id) if *id == a => *id = b,
+            Node::Pane(id) if *id == b => *id = a,
+            Node::Pane(_) => {}
+            Node::Split { first, second, .. } => {
+                first.swap_leaves(a, b);
+                second.swap_leaves(a, b);
+            }
+        }
+    }
+}
+
+/// Whether `at` lies inside the interval `(start, length)`.
+fn within((start, length): (f32, f32), at: f32) -> bool {
+    at >= start && at < start + length
+}
+
+/// How far `at` is from the interval `(start, length)`; zero inside it.
+fn distance((start, length): (f32, f32), at: f32) -> f32 {
+    (start - at).max(at - (start + length)).max(0.0)
+}
+
 fn fits_minimum(rect: Rect) -> bool {
     rect.width >= MIN_PANE_SIZE.width && rect.height >= MIN_PANE_SIZE.height
 }
