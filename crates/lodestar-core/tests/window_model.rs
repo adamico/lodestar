@@ -72,4 +72,31 @@ mod open_session {
         let right = panes(&model)[1];
         assert_eq!(model.session_in(right), None);
     }
+
+    #[test]
+    fn opening_a_session_in_an_occupied_pane_replaces_its_session() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        model.open_session(SessionId(1), left);
+
+        model.open_session(SessionId(2), left);
+
+        assert_eq!(model.session_in(left), Some(SessionId(2)));
+        let right = panes(&model)[1];
+        assert_eq!(model.session_in(right), None);
+    }
+
+    #[test]
+    fn a_replaced_session_is_no_longer_shown_anywhere() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        model.open_session(SessionId(1), left);
+        model.open_session(SessionId(2), left);
+
+        let all = [SessionId(1), SessionId(2), SessionId(3)];
+        assert_eq!(model.not_shown(&all), vec![SessionId(1), SessionId(3)]);
+        assert_eq!(model.sessions_shown(), vec![SessionId(2)]);
+        assert_eq!(model.pane_showing(SessionId(1)), None);
+        assert_eq!(model.pane_showing(SessionId(2)), Some(left));
+    }
 }
