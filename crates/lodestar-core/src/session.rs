@@ -26,6 +26,25 @@ pub enum SessionStatus {
     Done,
 }
 
+/// The ordered messages and tool calls that make up a session's history.
+///
+/// For now each item is plain text; richer items (markdown, tool calls) come later.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Transcript {
+    items: Vec<String>,
+}
+
+impl Transcript {
+    pub fn new(items: Vec<String>) -> Self {
+        Self { items }
+    }
+
+    /// The items in the order they happened.
+    pub fn items(&self) -> &[String] {
+        &self.items
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
     pub id: SessionId,
@@ -34,6 +53,7 @@ pub struct Session {
     pub status: SessionStatus,
     /// Seconds since the Unix epoch. Orders sessions newest first.
     pub started_at: u64,
+    pub transcript: Transcript,
 }
 
 /// What a session source supplies at startup.
