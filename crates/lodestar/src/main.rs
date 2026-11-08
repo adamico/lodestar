@@ -20,7 +20,7 @@ use crate::claude::ClaudeSource;
 use crate::fixtures::FixtureSource;
 use crate::main_window::MainWindow;
 
-/// Set to `1` to run on the bundled fixture sessions instead of real Agents.
+/// Set to `1` (or `true`) to run on the bundled fixture sessions instead of real Agents.
 const FIXTURES_VAR: &str = "LODESTAR_FIXTURES";
 
 fn main() {
@@ -30,7 +30,7 @@ fn main() {
         transcript_view::bind_keys(cx);
         leader::init(cx);
 
-        let mut source: Box<dyn SessionSource> = if std::env::var_os(FIXTURES_VAR).is_some() {
+        let mut source: Box<dyn SessionSource> = if fixtures_wanted(std::env::var_os(FIXTURES_VAR).as_deref()) {
             Box::new(FixtureSource::new())
         } else {
             Box::new(ClaudeSource::from_env())
@@ -56,4 +56,27 @@ fn main() {
         .detach();
         cx.activate(true);
     });
+}
+
+/// Whether [`FIXTURES_VAR`] set to `value` asks for fixtures: only `1` or `true`, in any case.
+fn fixtures_wanted(value: Option<&std::ffi::OsStr>) -> bool {
+    value
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures_wanted;
+
+    #[test]
+    fn fixtures_are_on_only_for_one_or_true() {
+        for on in ["1", "true", "TRUE", "True"] {
+            assert!(fixtures_wanted(Some(on.as_ref())), "{on}");
+        }
+        for off in ["0", "false", "", "yes"] {
+            assert!(!fixtures_wanted(Some(off.as_ref())), "{off}");
+        }
+        assert!(!fixtures_wanted(None));
+    }
 }
