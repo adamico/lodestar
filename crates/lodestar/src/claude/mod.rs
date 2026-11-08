@@ -23,7 +23,8 @@ pub const CLAUDE_BIN_VAR: &str = "LODESTAR_CLAUDE_BIN";
 pub struct ClaudeSource {
     program: OsString,
     agents: HashMap<SessionId, Agent>,
-    /// Claude Code's own id for each session, for resuming one day.
+    /// Claude Code's own id for each session, from its first `system`/`init` line. The spec
+    /// asks for it to be recorded: it is what ties a Lodestar session to Claude Code's.
     claude_session_ids: HashMap<SessionId, String>,
 }
 
