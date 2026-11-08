@@ -1,9 +1,9 @@
 //! A pane's Transcript: a virtualised list of its items and the (disabled) input box below.
 //!
 //! The list is GPUI's `list`, which measures each row as it is drawn, so markdown of any
-//! height works. Its `ListState` is the per-pane scroll handle: ticket #12 can follow the tail
-//! with `set_follow_mode(FollowMode::Tail)` and detect "scrolled up" with `is_following_tail()`
-//! and `is_scrolled_to_end()`.
+//! height works. Its `ListState` is the per-pane scroll handle. A pane whose session is
+//! running follows the tail: new rows keep the end in view until the user scrolls up, which
+//! pauses following and shows a "Jump to latest" pill that resumes it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,6 +27,7 @@ const INPUT_TOOLTIP: &str = "Sending arrives in Milestone 2";
 const USER_MARKER: &str = "You";
 const COLLAPSED_MARKER: &str = "\u{25B8}";
 const EXPANDED_MARKER: &str = "\u{25BE}";
+const JUMP_TO_LATEST: &str = "\u{2193} Jump to latest";
 
 actions!(
     lodestar,
@@ -95,19 +96,33 @@ struct PaneTranscript {
     input: Entity<InputState>,
     /// Indices of the tool calls the user has expanded.
     expanded: HashSet<usize>,
+    /// Whether the list was told to follow its tail, which it does for a running session.
+    follows_tail: bool,
 }
 
 impl TranscriptViews {
     /// Render `transcript` in `pane`: the list above, the disabled input box below.
+    ///
+    /// While `streaming`, the list follows new items; once the user scrolls up, a pill over
+    /// the bottom of the list offers to jump back to the latest.
     pub fn render(
         &mut self,
         pane: PaneId,
         session: SessionId,
         transcript: &Transcript,
+        streaming: bool,
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> impl IntoElement + use<> {
-        let state = self.sync(pane, session, transcript.items().len(), window, cx);
+        let state = self.sync(
+            pane,
+            session,
+            transcript.items().len(),
+            streaming,
+            window,
+            cx,
+        );
+        let paused = streaming && !state.list.is_following_tail();
         let items = transcript.items().to_vec();
         let expanded = state.expanded.clone();
         let this = cx.weak_entity();
@@ -156,7 +171,8 @@ impl TranscriptViews {
                     .min_h_0()
                     .overflow_hidden()
                     .child(list)
-                    .vertical_scrollbar(&list_for_scrollbar),
+                    .vertical_scrollbar(&list_for_scrollbar)
+                    .when(paused, |this| this.child(render_jump_to_latest(pane, cx))),
             )
             .child(
                 div()
@@ -182,6 +198,24 @@ impl TranscriptViews {
         }
     }
 
+    /// Scroll `pane`'s Transcript to its end and follow new items again.
+    pub fn jump_to_latest(&mut self, pane: PaneId) {
+        if let Some(state) = self.panes.get_mut(&pane) {
+            state.follows_tail = true;
+            state.list.set_follow_mode(FollowMode::Tail);
+        }
+    }
+
+    /// Whether any pane has stopped following a tail it was told to follow.
+    ///
+    /// The list resumes following on its own when scrolled back to the end, during layout,
+    /// so the window re-renders while this holds to keep the pill honest.
+    pub fn any_paused(&self) -> bool {
+        self.panes
+            .values()
+            .any(|state| state.follows_tail && !state.list.is_following_tail())
+    }
+
     /// Move `pane`'s Transcript. Panes without a Transcript ignore it.
     pub fn scroll(&mut self, pane: PaneId, scroll: Scroll) {
         let Some(state) = self.panes.get(&pane) else {
@@ -203,23 +237,31 @@ impl TranscriptViews {
 
     /// The state for `pane`, sized for `item_count` items of `session`.
     ///
-    /// A pane that switches session starts from the top with every tool call collapsed; a
-    /// Transcript that grew keeps its scroll position and learns about the new rows.
+    /// A pane that switches session starts with every tool call collapsed, from the top, or
+    /// from the end and following the tail when the session is `streaming`; a Transcript
+    /// that grew keeps its scroll position and learns about the new rows.
     fn sync(
         &mut self,
         pane: PaneId,
         session: SessionId,
         item_count: usize,
+        streaming: bool,
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> &PaneTranscript {
-        let state = self.panes.entry(pane).or_insert_with(|| PaneTranscript {
-            session,
-            list: ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW),
-            input: cx.new(|cx| InputState::new(window, cx).placeholder(INPUT_PLACEHOLDER)),
-            expanded: HashSet::new(),
+        let mut fresh = false;
+        let state = self.panes.entry(pane).or_insert_with(|| {
+            fresh = true;
+            PaneTranscript {
+                session,
+                list: ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW),
+                input: cx.new(|cx| InputState::new(window, cx).placeholder(INPUT_PLACEHOLDER)),
+                expanded: HashSet::new(),
+                follows_tail: false,
+            }
         });
         if state.session != session {
+            fresh = true;
             state.session = session;
             state.expanded.clear();
             state.list.reset(item_count);
@@ -229,6 +271,14 @@ impl TranscriptViews {
                 let kept = known.min(item_count);
                 state.list.splice(kept..known, item_count - kept);
             }
+        }
+        if fresh {
+            state.follows_tail = streaming;
+            state.list.set_follow_mode(if streaming {
+                FollowMode::Tail
+            } else {
+                FollowMode::Normal
+            });
         }
         state
     }
@@ -240,6 +290,34 @@ fn pane_element_id(pane: PaneId, what: &str) -> ElementId {
 
 fn item_element_id(pane: PaneId, ix: usize, what: &str) -> ElementId {
     ElementId::NamedInteger(format!("{what}-{pane:?}").into(), ix as u64)
+}
+
+/// The pill over the bottom of a paused streaming Transcript: click to follow the tail again.
+fn render_jump_to_latest(pane: PaneId, cx: &mut Context<MainWindow>) -> impl IntoElement {
+    let theme = cx.theme();
+    div()
+        .absolute()
+        .bottom_3()
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id(pane_element_id(pane, "jump-to-latest"))
+                .px_3()
+                .py_1()
+                .rounded_full()
+                .bg(theme.primary)
+                .text_color(theme.primary_foreground)
+                .text_xs()
+                .font_semibold()
+                .shadow_md()
+                .cursor_pointer()
+                .hover(|this| this.bg(theme.primary_hover))
+                .on_click(cx.listener(move |this, _, _, cx| this.jump_to_latest(pane, cx)))
+                .child(JUMP_TO_LATEST),
+        )
 }
 
 /// A user message: a marker and the text on an accent-tinted card.

@@ -4,14 +4,14 @@
 //! Layout rules live in the window model, not here.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::geometry::{Rect, Size};
 use lodestar_core::picker::PickerState;
-use lodestar_core::session::{SessionStatus, SessionStore};
+use lodestar_core::session::{SessionSource, SessionStatus, SessionStore};
 use lodestar_core::window::{Direction, PaneId, Refused, WindowModel};
 
 use crate::leader::{CancelLeader, LEADER_FLAG, Leader, LeaderCommand, Mode, WINDOW_CONTEXT};
@@ -25,10 +25,19 @@ const ACCENT: u32 = 0x3b82f6;
 const UNFOCUSED_OPACITY: f32 = 0.6;
 /// How long a pane flashes after a refused command.
 const FLASH_DURATION: Duration = Duration::from_millis(150);
+/// How often the session source is asked for updates.
+const UPDATE_TICK: Duration = Duration::from_millis(250);
 
 pub struct MainWindow {
     pub(crate) window_model: WindowModel,
     pub(crate) sessions: SessionStore,
+    /// Where updates to the sessions come from. Polled on a timer for as long as the window
+    /// lives, whether or not the sessions they touch are shown.
+    source: Box<dyn SessionSource>,
+    /// When polling started; the source's clock counts from here.
+    started: Instant,
+    /// The timer loop that polls the source. Dropped with the window.
+    _updates: Task<()>,
     transcripts: TranscriptViews,
     /// Keys go to the window unless a text input took them.
     focus_handle: FocusHandle,
@@ -41,10 +50,25 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
-    pub fn new(sessions: SessionStore, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        sessions: SessionStore,
+        source: Box<dyn SessionSource>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let updates = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(UPDATE_TICK).await;
+                if this.update(cx, |this, cx| this.pump_updates(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         Self {
             window_model: WindowModel::new(),
             sessions,
+            source,
+            started: Instant::now(),
+            _updates: updates,
             transcripts: TranscriptViews::default(),
             focus_handle: cx.focus_handle(),
             mode: Mode::default(),
@@ -52,6 +76,25 @@ impl MainWindow {
             flashing: None,
             pickers: HashMap::new(),
         }
+    }
+
+    /// Apply whatever the source has for us by now. Sidebar dots, pane headers and
+    /// Transcripts all render the store, so one notify refreshes them all.
+    fn pump_updates(&mut self, cx: &mut Context<Self>) {
+        let updates = self.source.poll_updates(self.started.elapsed());
+        let changed = !updates.is_empty();
+        for update in updates {
+            self.sessions.apply(update);
+        }
+        if changed || self.transcripts.any_paused() {
+            cx.notify();
+        }
+    }
+
+    /// Scroll `pane`'s Transcript to the latest item and follow new ones again.
+    pub fn jump_to_latest(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        self.transcripts.jump_to_latest(pane);
+        cx.notify();
     }
 
     /// Scroll the focused pane's Transcript, if it shows one.
@@ -313,7 +356,14 @@ impl MainWindow {
         let body = match session {
             Some(session) => self
                 .transcripts
-                .render(pane, session.id, &session.transcript, window, cx)
+                .render(
+                    pane,
+                    session.id,
+                    &session.transcript,
+                    session.status == SessionStatus::Running,
+                    window,
+                    cx,
+                )
                 .into_any_element(),
             None => self.render_picker(pane, cx).into_any_element(),
         };

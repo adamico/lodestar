@@ -22,14 +22,15 @@ fn main() {
         transcript_view::bind_keys(cx);
         leader::init(cx);
 
-        let sessions = SessionStore::load(&mut FixtureSource::new());
+        let mut source = FixtureSource::new();
+        let sessions = SessionStore::load(&mut source);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
             app_id: Some("lodestar".into()),
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {
-            let view = cx.new(|cx| MainWindow::new(sessions, cx));
+            let view = cx.new(|cx| MainWindow::new(sessions, Box::new(source), cx));
             window.focus(&view.read(cx).focus_handle(), cx);
             view
         })
