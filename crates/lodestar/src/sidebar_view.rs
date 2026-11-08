@@ -5,13 +5,17 @@
 //! selection rules live in [`lodestar_core::sidebar`]; this module renders them and turns keys
 //! and mouse events into commands.
 
-use gpui_kit::component::sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem};
+use std::rc::Rc;
+
+use gpui_kit::component::Collapsible;
+use gpui_kit::component::sidebar::{Sidebar, SidebarGroup, SidebarItem};
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lodestar_core::session::Session;
+use lodestar_core::session::{Session, SessionId};
 use lodestar_core::sidebar::{SidebarList, clamp_width};
 
+use crate::drag_drop;
 use crate::main_window::{MainWindow, status_color, status_dot};
 
 /// The sidebar's width at launch.
@@ -178,12 +182,12 @@ impl MainWindow {
         }
         let width = self.sidebar.width;
         let mut row = 0;
-        let groups: Vec<SidebarGroup<SidebarMenu>> = self
+        let groups: Vec<SidebarGroup<SessionRow>> = self
             .sessions
             .projects()
             .iter()
             .map(|project| {
-                let items: Vec<SidebarMenuItem> = self
+                let rows: Vec<SessionRow> = self
                     .sessions
                     .sessions_in(project.id)
                     .into_iter()
@@ -193,7 +197,7 @@ impl MainWindow {
                         item
                     })
                     .collect();
-                SidebarGroup::new(project.name.clone()).child(SidebarMenu::new().children(items))
+                SidebarGroup::new(project.name.clone()).children(rows)
             })
             .collect();
 
@@ -233,35 +237,94 @@ impl MainWindow {
     }
 
     /// One session in the sidebar: title, a marker if a pane shows it, and its status dot.
-    /// Clicking it opens the session in the focused pane. While the sidebar has focus, the
-    /// selected row is highlighted instead of the shown ones.
+    /// Clicking it opens the session in the focused pane; dragging it onto a pane drops it
+    /// there. While the sidebar has focus, the selected row is highlighted instead of the
+    /// shown ones.
     fn render_sidebar_row(
         &self,
         session: &Session,
         row: usize,
         cx: &mut Context<Self>,
-    ) -> SidebarMenuItem {
+    ) -> SessionRow {
         let id = session.id;
         let shown = self.window_model.pane_showing(id).is_some();
         let active = match self.sidebar.selected {
             Some(selected) => selected == row,
             None => shown,
         };
-        let color = status_color(session.status, cx);
-        SidebarMenuItem::new(session.title.clone())
-            .active(active)
-            .suffix(move |_, _| {
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .when(shown, |this| this.child(SHOWN_MARKER))
-                    .child(status_dot(color))
-            })
-            .on_click(cx.listener(move |this, _, _, cx| {
+        SessionRow {
+            session: id,
+            title: session.title.clone().into(),
+            shown,
+            active,
+            status: status_color(session.status, cx),
+            on_click: Rc::new(cx.listener(move |this, _, _, cx| {
                 let pane = this.window_model.focused_pane();
                 this.window_model.open_session(id, pane);
                 this.sidebar.blur();
                 cx.notify();
-            }))
+            })),
+            collapsed: false,
+        }
+    }
+}
+
+/// What a sidebar row does when clicked.
+type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// A sidebar row for one session. gpui-kit's menu item cannot start a drag, so the row is
+/// Lodestar's own, drawn in the same style.
+#[derive(Clone)]
+struct SessionRow {
+    session: SessionId,
+    title: SharedString,
+    shown: bool,
+    active: bool,
+    status: Hsla,
+    on_click: ClickHandler,
+    collapsed: bool,
+}
+
+impl Collapsible for SessionRow {
+    fn collapsed(mut self, collapsed: bool) -> Self {
+        self.collapsed = collapsed;
+        self
+    }
+
+    fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
+}
+
+impl SidebarItem for SessionRow {
+    fn render(self, id: impl Into<ElementId>, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+        let on_click = self.on_click;
+        let row = h_flex()
+            .id(id)
+            .w_full()
+            .h_7()
+            .p_2()
+            .gap_x_2()
+            .items_center()
+            .rounded(theme.radius)
+            .text_sm()
+            .overflow_x_hidden()
+            .when(!self.active, |this| {
+                this.hover(|this| {
+                    this.bg(theme.sidebar_accent.opacity(0.8))
+                        .text_color(theme.sidebar_accent_foreground)
+                })
+            })
+            .when(self.active, |this| {
+                this.font_medium()
+                    .bg(theme.sidebar_accent)
+                    .text_color(theme.sidebar_accent_foreground)
+            })
+            .child(div().flex_1().truncate().child(self.title.clone()))
+            .when(self.shown, |this| this.child(SHOWN_MARKER))
+            .child(status_dot(self.status))
+            .on_click(move |event, window, cx| on_click(event, window, cx));
+        drag_drop::drag_session(row, self.session, self.title)
     }
 }

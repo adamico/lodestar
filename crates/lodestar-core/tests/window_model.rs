@@ -823,7 +823,12 @@ mod drop_session {
         model.open_session(SessionId(2), right);
         let before = rects(&model, TALL_AREA);
 
-        let result = model.drop_session(SessionId(1), right, DropZone::Edge(Direction::Right), TALL_AREA);
+        let result = model.drop_session(
+            SessionId(1),
+            right,
+            DropZone::Edge(Direction::Right),
+            TALL_AREA,
+        );
 
         assert_eq!(result, Err(Refused::BelowMinimumSize));
         assert_eq!(rects(&model, TALL_AREA), before);

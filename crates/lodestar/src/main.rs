@@ -1,3 +1,4 @@
+mod drag_drop;
 mod fixtures;
 mod leader;
 mod main_window;

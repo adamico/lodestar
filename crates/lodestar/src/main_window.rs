@@ -14,12 +14,13 @@ use lodestar_core::picker::PickerState;
 use lodestar_core::session::{SessionStatus, SessionStore};
 use lodestar_core::window::{Direction, PaneId, Refused, WindowModel};
 
+use crate::drag_drop::{self, DropTarget};
 use crate::leader::{CancelLeader, LEADER_FLAG, Leader, LeaderCommand, Mode, WINDOW_CONTEXT};
 use crate::sidebar_view::SidebarState;
 
 const PANE_HEADER_HEIGHT: Pixels = px(30.);
 /// Lodestar's one accent colour: marks the focused pane.
-const ACCENT: u32 = 0x3b82f6;
+pub(crate) const ACCENT: u32 = 0x3b82f6;
 const UNFOCUSED_OPACITY: f32 = 0.6;
 /// How long a pane flashes after a refused command.
 const FLASH_DURATION: Duration = Duration::from_millis(150);
@@ -34,6 +35,8 @@ pub struct MainWindow {
     flashing: Option<PaneId>,
     /// Each empty pane's picker: its filter and selection. Absent means untouched.
     pub(crate) pickers: HashMap<PaneId, PickerState>,
+    /// Where the current drag would drop, while one hovers a pane.
+    pub(crate) drop_target: Option<DropTarget>,
 }
 
 impl MainWindow {
@@ -46,6 +49,7 @@ impl MainWindow {
             sidebar: SidebarState::default(),
             flashing: None,
             pickers: HashMap::new(),
+            drop_target: None,
         }
     }
 
@@ -54,7 +58,7 @@ impl MainWindow {
     }
 
     /// The size of the pane area: the window minus the sidebar (all of it when hidden).
-    fn pane_area(&self, window: &Window) -> Size {
+    pub(crate) fn pane_area(&self, window: &Window) -> Size {
         let viewport = window.viewport_size();
         Size::new(
             f32::from(viewport.width - self.sidebar.width()).max(0.),
@@ -146,7 +150,13 @@ impl MainWindow {
     }
 
     /// Show briefly that a command on `pane` was refused.
-    fn flash(&mut self, pane: PaneId, _: Refused, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn flash(
+        &mut self,
+        pane: PaneId,
+        _: Refused,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.flashing = Some(pane);
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(FLASH_DURATION).await;
@@ -243,7 +253,10 @@ impl MainWindow {
             .window_model
             .session_in(pane)
             .and_then(|id| self.sessions.session(id));
+        let title: SharedString =
+            session.map_or("Empty".into(), |session| session.title.clone().into());
         let header = h_flex()
+            .id(pane_element_id("pane-header", pane))
             .h(PANE_HEADER_HEIGHT)
             .flex_shrink_0()
             .px_2()
@@ -266,6 +279,7 @@ impl MainWindow {
             }
             None => header.child("Empty"),
         };
+        let header = drag_drop::drag_pane(header, pane, title);
         let header = header.child(div().flex_1()).child(
             div()
                 .id(pane_element_id("close-pane", pane))
@@ -296,7 +310,7 @@ impl MainWindow {
             None => self.render_picker(pane, cx),
         };
 
-        v_flex()
+        let pane_element = v_flex()
             .border_1()
             .border_color(border)
             .bg(background)
@@ -310,11 +324,14 @@ impl MainWindow {
             )
             .child(header)
             .child(body)
+            .children(self.render_drop_overlay(pane));
+        self.drop_target(pane_element, pane, cx)
     }
 }
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.clear_stale_drop_target(cx);
         h_flex()
             .key_context(self.key_context())
             .track_focus(&self.focus_handle)
