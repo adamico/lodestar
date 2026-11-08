@@ -166,6 +166,15 @@ impl WindowModel {
         self.panes.get(&pane).copied().flatten()
     }
 
+    /// Show `session` in `pane`, as a sidebar click does.
+    ///
+    /// A pane that no longer exists is ignored.
+    pub fn open_session(&mut self, session: SessionId, pane: PaneId) {
+        if let Some(slot) = self.panes.get_mut(&pane) {
+            *slot = Some(session);
+        }
+    }
+
     fn new_pane(&mut self) -> PaneId {
         let pane = PaneId(self.next_pane_id);
         self.next_pane_id += 1;

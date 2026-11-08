@@ -48,3 +48,28 @@ fn clicking_a_pane_focuses_it() {
 
     assert_eq!(model.focused_pane(), right);
 }
+
+mod open_session {
+    use lodestar_core::geometry::Size;
+    use lodestar_core::session::SessionId;
+    use lodestar_core::window::{PaneId, WindowModel};
+
+    const AREA: Size = Size::new(1001.0, 600.0);
+
+    fn panes(model: &WindowModel) -> Vec<PaneId> {
+        model.layout(AREA).panes.iter().map(|p| p.pane).collect()
+    }
+
+    #[test]
+    fn opening_a_session_in_an_empty_focused_pane_fills_it() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+
+        model.open_session(SessionId(1), left);
+
+        assert_eq!(model.session_in(left), Some(SessionId(1)));
+        assert_eq!(model.focused_pane(), left);
+        let right = panes(&model)[1];
+        assert_eq!(model.session_in(right), None);
+    }
+}
