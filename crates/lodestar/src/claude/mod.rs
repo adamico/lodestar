@@ -9,10 +9,11 @@ use std::time::Duration;
 
 use lodestar_core::session::{
     InitialSessions, Project, SessionId, SessionSource, SessionStatus, SessionUpdate,
+    TranscriptItem,
 };
 
 use self::mapper::Event;
-use self::process::{Agent, AgentEvent};
+use self::process::{Agent, AgentEvent, AgentExit};
 
 pub mod mapper;
 pub mod process;
@@ -47,6 +48,15 @@ impl ClaudeSource {
         Self::new(std::env::var_os(CLAUDE_BIN_VAR).unwrap_or_else(|| "claude".into()))
     }
 
+    /// The binary's name without its folder, as the user knows it.
+    fn program_name(&self) -> String {
+        std::path::Path::new(&self.program)
+            .file_name()
+            .unwrap_or(&self.program)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn updates_from(&mut self, session: SessionId, event: AgentEvent) -> Vec<SessionUpdate> {
         match event {
             AgentEvent::Line(line) => {
@@ -58,8 +68,36 @@ impl ClaudeSource {
                 }
                 mapper::updates_for(session, &event)
             }
-            AgentEvent::Exited => Vec::new(),
+            AgentEvent::Exited(exit) => {
+                self.agents.remove(&session);
+                vec![
+                    SessionUpdate::TranscriptItem {
+                        session,
+                        item: TranscriptItem::Error(self.exit_message(&exit)),
+                    },
+                    SessionUpdate::Status {
+                        session,
+                        status: SessionStatus::Done,
+                    },
+                ]
+            }
         }
+    }
+
+    /// Words for the user about an Agent that is gone: how it ended and, when it said
+    /// anything on stderr, what.
+    fn exit_message(&self, exit: &AgentExit) -> String {
+        let program = self.program_name();
+        let mut message = match (exit.code, exit.signal) {
+            (Some(code), _) => format!("{program} exited (code {code})."),
+            (None, Some(signal)) => format!("{program} was killed (signal {signal})."),
+            (None, None) => format!("{program} exited."),
+        };
+        if !exit.stderr.is_empty() {
+            message.push('\n');
+            message.push_str(&exit.stderr);
+        }
+        message
     }
 }
 
@@ -73,7 +111,11 @@ impl SessionSource for ClaudeSource {
         let mut sessions: Vec<SessionId> = self.agents.keys().copied().collect();
         sessions.sort();
         for session in sessions {
-            let events = self.agents.get_mut(&session).map(Agent::drain).unwrap_or_default();
+            let events = self
+                .agents
+                .get_mut(&session)
+                .map(Agent::drain)
+                .unwrap_or_default();
             for event in events {
                 updates.extend(self.updates_from(session, event));
             }
@@ -89,9 +131,13 @@ impl SessionSource for ClaudeSource {
             ));
         }
         let agent = Agent::spawn(&self.program, &project.path, session).map_err(|error| {
+            let reason = match error.kind() {
+                std::io::ErrorKind::NotFound => "not found on PATH".to_owned(),
+                _ => error.to_string(),
+            };
             format!(
-                "Could not start {}: {error}. Install Claude Code or set {CLAUDE_BIN_VAR}.",
-                self.program.to_string_lossy()
+                "Couldn't start {}: {reason}. Install Claude Code or set {CLAUDE_BIN_VAR}.",
+                self.program_name()
             )
         })?;
         self.agents.insert(session, agent);
@@ -107,9 +153,19 @@ impl SessionSource for ClaudeSource {
                 session,
                 status: SessionStatus::Running,
             }),
-            // The Agent is gone; the error-handling slice turns this into a Transcript item.
-            Err(error) => eprintln!("lodestar: session {}: send failed: {error}", session.0),
+            // The Agent is gone, or going: its exit is reported on the next poll if it has not
+            // been already; until then, say what happened to the message.
+            Err(error) => self.pending.push(SessionUpdate::TranscriptItem {
+                session,
+                item: TranscriptItem::Error(format!("Couldn't send the message: {error}.")),
+            }),
         }
+    }
+
+    /// Kill every Agent (dropping one kills it) and forget what they had to say.
+    fn shutdown(&mut self) {
+        self.agents.clear();
+        self.pending.clear();
     }
 }
 
@@ -120,8 +176,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use lodestar_core::session::{
-        Project, ProjectId, SessionId, SessionSource, SessionStatus, SessionUpdate,
-        TranscriptItem,
+        Project, ProjectId, SessionId, SessionSource, SessionStatus, SessionUpdate, TranscriptItem,
     };
 
     use super::*;
@@ -130,44 +185,104 @@ mod tests {
     /// replays a recorded turn on stdout, then stays alive until stdin closes, as claude does.
     #[cfg(unix)]
     fn fake_claude(name: &str) -> (PathBuf, PathBuf) {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = std::env::temp_dir().join(format!("lodestar-fake-claude-{name}-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let record = dir.join("stdin-first-line");
-        let recording = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/stream-json/text-only.jsonl");
-        let script = dir.join("claude");
-        fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nread -r line\nprintf '%s\\n' \"$line\" > '{}'\ncat '{recording}'\ncat > /dev/null\n",
+        let record = fake_dir(name).join("stdin-first-line");
+        let script = fake_claude_doing(
+            name,
+            &format!(
+                "read -r line\nprintf '%s\\n' \"$line\" > '{}'\ncat '{RECORDING}'\ncat > /dev/null\n",
                 record.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         (script, record)
     }
 
-    fn poll_until_waiting(source: &mut ClaudeSource) -> Vec<SessionUpdate> {
+    const RECORDING: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/stream-json/text-only.jsonl"
+    );
+
+    fn fake_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lodestar-fake-claude-{name}-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A stand-in for the `claude` binary that runs `body` as a shell script.
+    #[cfg(unix)]
+    fn fake_claude_doing(name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let script = fake_dir(name).join("claude");
+        fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    fn tmp_project() -> Project {
+        Project {
+            id: ProjectId(0),
+            name: "tmp".into(),
+            path: std::env::temp_dir(),
+        }
+    }
+
+    fn poll_until(
+        source: &mut ClaudeSource,
+        done: impl Fn(&[SessionUpdate]) -> bool,
+    ) -> Vec<SessionUpdate> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut all = Vec::new();
         while Instant::now() < deadline {
             all.extend(source.poll_updates(Duration::ZERO));
-            if all.iter().any(|update| {
-                matches!(
-                    update,
-                    SessionUpdate::Status {
-                        status: SessionStatus::WaitingForInput,
-                        ..
-                    }
-                )
-            }) {
+            if done(&all) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         all
+    }
+
+    fn reached(updates: &[SessionUpdate], wanted: SessionStatus) -> bool {
+        updates.iter().any(
+            |update| matches!(update, SessionUpdate::Status { status, .. } if *status == wanted),
+        )
+    }
+
+    fn poll_until_waiting(source: &mut ClaudeSource) -> Vec<SessionUpdate> {
+        poll_until(source, |all| reached(all, SessionStatus::WaitingForInput))
+    }
+
+    fn poll_until_done(source: &mut ClaudeSource) -> Vec<SessionUpdate> {
+        poll_until(source, |all| reached(all, SessionStatus::Done))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_that_exits_with_an_error_ends_the_session_with_its_code_and_stderr() {
+        let program = fake_claude_doing("exit", "echo 'error: unknown option' >&2\nexit 1\n");
+        let mut source = ClaudeSource::new(program.into());
+
+        source.start_agent(SessionId(3), &tmp_project()).unwrap();
+        let updates = poll_until_done(&mut source);
+
+        assert_eq!(
+            updates,
+            [
+                SessionUpdate::TranscriptItem {
+                    session: SessionId(3),
+                    item: TranscriptItem::Error(
+                        "claude exited (code 1).\nerror: unknown option".into()
+                    ),
+                },
+                SessionUpdate::Status {
+                    session: SessionId(3),
+                    status: SessionStatus::Done
+                },
+            ]
+        );
     }
 
     #[cfg(unix)]
@@ -212,6 +327,109 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_killed_from_outside_ends_the_session_naming_the_signal() {
+        let program = fake_claude_doing("killed", "kill -KILL $$\n");
+        let mut source = ClaudeSource::new(program.into());
+
+        source.start_agent(SessionId(3), &tmp_project()).unwrap();
+        let updates = poll_until_done(&mut source);
+
+        assert_eq!(
+            updates,
+            [
+                SessionUpdate::TranscriptItem {
+                    session: SessionId(3),
+                    item: TranscriptItem::Error("claude was killed (signal 9).".into()),
+                },
+                SessionUpdate::Status {
+                    session: SessionId(3),
+                    status: SessionStatus::Done
+                },
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lines_that_are_not_json_are_skipped_and_the_turn_still_arrives() {
+        let program = fake_claude_doing(
+            "garbage",
+            &format!(
+                "echo 'not json at all'\necho '{{\"type\": 42}}'\ncat '{RECORDING}'\ncat > /dev/null\n"
+            ),
+        );
+        let mut source = ClaudeSource::new(program.into());
+
+        source.start_agent(SessionId(3), &tmp_project()).unwrap();
+        let updates = poll_until_waiting(&mut source);
+
+        assert_eq!(
+            updates,
+            [
+                SessionUpdate::Status {
+                    session: SessionId(3),
+                    status: SessionStatus::Running
+                },
+                SessionUpdate::TranscriptItem {
+                    session: SessionId(3),
+                    item: TranscriptItem::Assistant("pong".into())
+                },
+                SessionUpdate::Status {
+                    session: SessionId(3),
+                    status: SessionStatus::WaitingForInput
+                },
+            ]
+        );
+        assert!(source.poll_updates(Duration::ZERO).is_empty());
+    }
+
+    /// Whether a process with `pid` is still around.
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutting_down_stops_every_agent_the_source_started() {
+        let pids = fake_dir("shutdown").join("pids");
+        let _ = fs::remove_file(&pids);
+        let program = fake_claude_doing(
+            "shutdown",
+            &format!("echo $$ >> '{}'\ncat > /dev/null\n", pids.display()),
+        );
+        let mut source = ClaudeSource::new(program.into());
+        source.start_agent(SessionId(1), &tmp_project()).unwrap();
+        source.start_agent(SessionId(2), &tmp_project()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while fs::read_to_string(&pids)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+            < 2
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pids = fs::read_to_string(&pids).unwrap();
+        let pids: Vec<&str> = pids.lines().collect();
+        assert_eq!(pids.len(), 2);
+        assert!(pids.iter().all(|pid| alive(pid)));
+
+        source.shutdown();
+
+        assert!(
+            pids.iter().all(|pid| !alive(pid)),
+            "an Agent survived shutdown"
+        );
+        assert!(source.poll_updates(Duration::ZERO).is_empty());
+    }
+
     #[test]
     fn an_agent_cannot_start_in_a_folder_that_does_not_exist() {
         let project = Project {
@@ -229,15 +447,14 @@ mod tests {
 
     #[test]
     fn a_missing_binary_is_reported_when_the_agent_starts() {
-        let project = Project {
-            id: ProjectId(0),
-            name: "tmp".into(),
-            path: std::env::temp_dir(),
-        };
         let mut source = ClaudeSource::new("lodestar-no-such-claude-binary".into());
 
-        let started = source.start_agent(SessionId(3), &project);
+        let started = source.start_agent(SessionId(3), &tmp_project());
 
-        assert!(started.unwrap_err().contains("lodestar-no-such-claude-binary"));
+        assert_eq!(
+            started.unwrap_err(),
+            "Couldn't start lodestar-no-such-claude-binary: not found on PATH. \
+             Install Claude Code or set LODESTAR_CLAUDE_BIN."
+        );
     }
 }

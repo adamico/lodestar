@@ -41,12 +41,19 @@ fn main() {
             app_id: Some("lodestar".into()),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |window, cx| {
+        let (_, view) = gpui_kit::open_window(options, cx, |window, cx| {
             let view = cx.new(|cx| MainWindow::new(sessions, source, cx));
             window.focus(&view.read(cx).focus_handle(), cx);
             view
         })
         .expect("failed to open the Lodestar window");
+        // Quitting (here, closing the last window) stops every Agent before the process
+        // goes; the source's Drop is the backstop should the window not get this far.
+        cx.on_app_quit(move |cx| {
+            view.update(cx, |main_window, _| main_window.source.shutdown());
+            async {}
+        })
+        .detach();
         cx.activate(true);
     });
 }

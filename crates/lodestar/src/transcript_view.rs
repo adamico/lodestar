@@ -29,6 +29,7 @@ const INPUT_PLACEHOLDER: &str = "Message the agent (enter sends, shift+enter for
 /// How many rows the input box grows to before it scrolls.
 const INPUT_MAX_ROWS: usize = 6;
 const USER_MARKER: &str = "You";
+const ERROR_MARKER: &str = "Error";
 const COLLAPSED_MARKER: &str = "\u{25B8}";
 const EXPANDED_MARKER: &str = "\u{25BE}";
 const JUMP_TO_LATEST: &str = "\u{2193} Jump to latest";
@@ -186,6 +187,7 @@ impl TranscriptViews {
                     TranscriptItem::Assistant(markdown) => {
                         render_assistant(pane, ix, markdown).into_any_element()
                     }
+                    TranscriptItem::Error(message) => render_error(message, cx).into_any_element(),
                     TranscriptItem::ToolCall(call) => {
                         let this = this.clone();
                         let toggle = move |cx: &mut App| {
@@ -412,6 +414,26 @@ fn render_user(text: &str, cx: &App) -> impl IntoElement {
                 .child(USER_MARKER),
         )
         .child(div().child(text.to_string()))
+}
+
+/// An error: why the session stopped, on a danger-tinted card.
+fn render_error(message: &str, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    v_flex()
+        .gap_1()
+        .p_2()
+        .rounded_md()
+        .bg(theme.secondary)
+        .border_l_2()
+        .border_color(theme.danger)
+        .child(
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(theme.danger)
+                .child(ERROR_MARKER),
+        )
+        .child(div().child(message.to_string()))
 }
 
 /// An assistant message: its markdown, rendered without syntax highlighting.

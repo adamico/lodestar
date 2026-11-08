@@ -10,7 +10,9 @@ use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::picker::{PickerEntry, PickerList, PickerState};
-use lodestar_core::session::{Project, ProjectId, SessionId, SessionStatus, SessionUpdate};
+use lodestar_core::session::{
+    Project, ProjectId, SessionId, SessionStatus, SessionUpdate, TranscriptItem,
+};
 use lodestar_core::window::PaneId;
 
 use crate::main_window::{MainWindow, pane_element_id, status_color, status_dot};
@@ -191,8 +193,10 @@ impl MainWindow {
             return;
         };
         if let Err(message) = self.source.start_agent(session, &project) {
-            // The error-handling slice puts `message` in the Transcript.
-            eprintln!("lodestar: {message}");
+            self.sessions.apply(SessionUpdate::TranscriptItem {
+                session,
+                item: TranscriptItem::Error(message),
+            });
             self.sessions.apply(SessionUpdate::Status {
                 session,
                 status: SessionStatus::Done,

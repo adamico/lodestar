@@ -78,6 +78,9 @@ pub enum TranscriptItem {
     /// A message from the Agent, as markdown.
     Assistant(String),
     ToolCall(ToolCall),
+    /// Why the session stopped short, in words for the user: the Agent exited, was killed or
+    /// could not start. Always the last item, since nothing happens after it.
+    Error(String),
 }
 
 /// The ordered messages and tool calls that make up a session's history.
@@ -165,6 +168,10 @@ pub trait SessionSource {
     fn send_message(&mut self, session: SessionId, text: &str) {
         let _ = (session, text);
     }
+
+    /// Stop every Agent this source started, because the app is quitting. Nothing arrives
+    /// through `poll_updates` afterwards. Sources without Agents have nothing to stop.
+    fn shutdown(&mut self) {}
 }
 
 /// Why a session cannot take a message right now. Each one reads as a line for the input box.
