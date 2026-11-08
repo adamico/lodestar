@@ -181,19 +181,28 @@ mod tests {
 
     use super::*;
 
-    /// A stand-in for the `claude` binary: it waits for the first stdin line, records it,
-    /// replays a recorded turn on stdout, then stays alive until stdin closes, as claude does.
+    /// The committed stand-in for the `claude` binary. It runs `fake-claude-body` from the
+    /// Project it starts in, so no test ever execs a file written at runtime (ETXTBSY).
+    const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/fake-claude/claude");
+
+    fn fake_source() -> ClaudeSource {
+        ClaudeSource::new(FAKE_CLAUDE.into())
+    }
+
+    /// A fake Agent's Project: it waits for the first stdin line, records it, replays a
+    /// recorded turn on stdout, then stays alive until stdin closes, as claude does. Also
+    /// returns where the first line is recorded.
     #[cfg(unix)]
-    fn fake_claude(name: &str) -> (PathBuf, PathBuf) {
+    fn fake_claude(name: &str) -> (Project, PathBuf) {
         let record = fake_dir(name).join("stdin-first-line");
-        let script = fake_claude_doing(
+        let project = fake_claude_doing(
             name,
             &format!(
                 "read -r line\nprintf '%s\\n' \"$line\" > '{}'\ncat '{RECORDING}'\ncat > /dev/null\n",
                 record.display()
             ),
         );
-        (script, record)
+        (project, record)
     }
 
     const RECORDING: &str = concat!(
@@ -210,22 +219,19 @@ mod tests {
         dir
     }
 
-    /// A stand-in for the `claude` binary that runs `body` as a shell script.
+    /// A Project in which [`FAKE_CLAUDE`] runs `body` as a shell script.
     #[cfg(unix)]
-    fn fake_claude_doing(name: &str, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let script = fake_dir(name).join("claude");
-        fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        script
+    fn fake_claude_doing(name: &str, body: &str) -> Project {
+        let dir = fake_dir(name);
+        fs::write(dir.join("fake-claude-body"), body).unwrap();
+        project_in(dir)
     }
 
-    fn tmp_project() -> Project {
+    fn project_in(path: PathBuf) -> Project {
         Project {
             id: ProjectId(0),
             name: "tmp".into(),
-            path: std::env::temp_dir(),
+            path,
         }
     }
 
@@ -262,10 +268,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_agent_that_exits_with_an_error_ends_the_session_with_its_code_and_stderr() {
-        let program = fake_claude_doing("exit", "echo 'error: unknown option' >&2\nexit 1\n");
-        let mut source = ClaudeSource::new(program.into());
+        let project = fake_claude_doing("exit", "echo 'error: unknown option' >&2\nexit 1\n");
+        let mut source = fake_source();
 
-        source.start_agent(SessionId(3), &tmp_project()).unwrap();
+        source.start_agent(SessionId(3), &project).unwrap();
         let updates = poll_until_done(&mut source);
 
         assert_eq!(
@@ -288,13 +294,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_started_agent_gets_the_message_as_one_json_line_and_its_turn_streams_back() {
-        let (program, record) = fake_claude("turn");
-        let project = Project {
-            id: ProjectId(0),
-            name: "play".into(),
-            path: std::env::temp_dir(),
-        };
-        let mut source = ClaudeSource::new(program.into());
+        let (project, record) = fake_claude("turn");
+        let mut source = fake_source();
 
         source.start_agent(SessionId(3), &project).unwrap();
         source.send_message(SessionId(3), "Say hello in one sentence.");
@@ -330,10 +331,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_agent_killed_from_outside_ends_the_session_naming_the_signal() {
-        let program = fake_claude_doing("killed", "kill -KILL $$\n");
-        let mut source = ClaudeSource::new(program.into());
+        let project = fake_claude_doing("killed", "kill -KILL $$\n");
+        let mut source = fake_source();
 
-        source.start_agent(SessionId(3), &tmp_project()).unwrap();
+        source.start_agent(SessionId(3), &project).unwrap();
         let updates = poll_until_done(&mut source);
 
         assert_eq!(
@@ -354,15 +355,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn lines_that_are_not_json_are_skipped_and_the_turn_still_arrives() {
-        let program = fake_claude_doing(
+        let project = fake_claude_doing(
             "garbage",
             &format!(
                 "echo 'not json at all'\necho '{{\"type\": 42}}'\ncat '{RECORDING}'\ncat > /dev/null\n"
             ),
         );
-        let mut source = ClaudeSource::new(program.into());
+        let mut source = fake_source();
 
-        source.start_agent(SessionId(3), &tmp_project()).unwrap();
+        source.start_agent(SessionId(3), &project).unwrap();
         let updates = poll_until_waiting(&mut source);
 
         assert_eq!(
@@ -388,11 +389,7 @@ mod tests {
     /// Whether a process with `pid` is still around.
     #[cfg(unix)]
     fn alive(pid: &str) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", pid])
-            .status()
-            .unwrap()
-            .success()
+        std::path::Path::new("/proc").join(pid).exists()
     }
 
     #[cfg(unix)]
@@ -400,13 +397,13 @@ mod tests {
     fn shutting_down_stops_every_agent_the_source_started() {
         let pids = fake_dir("shutdown").join("pids");
         let _ = fs::remove_file(&pids);
-        let program = fake_claude_doing(
+        let project = fake_claude_doing(
             "shutdown",
             &format!("echo $$ >> '{}'\ncat > /dev/null\n", pids.display()),
         );
-        let mut source = ClaudeSource::new(program.into());
-        source.start_agent(SessionId(1), &tmp_project()).unwrap();
-        source.start_agent(SessionId(2), &tmp_project()).unwrap();
+        let mut source = fake_source();
+        source.start_agent(SessionId(1), &project).unwrap();
+        source.start_agent(SessionId(2), &project).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while fs::read_to_string(&pids)
             .map(|s| s.lines().count())
@@ -449,7 +446,7 @@ mod tests {
     fn a_missing_binary_is_reported_when_the_agent_starts() {
         let mut source = ClaudeSource::new("lodestar-no-such-claude-binary".into());
 
-        let started = source.start_agent(SessionId(3), &tmp_project());
+        let started = source.start_agent(SessionId(3), &project_in(std::env::temp_dir()));
 
         assert_eq!(
             started.unwrap_err(),
