@@ -12,10 +12,10 @@
 //! at least every poll while a session runs, so its seconds tick.
 //!
 //! The input box sends on `enter` (`shift+enter` inserts a newline) and `escape` hands the
-//! keyboard back to the window. When the Agent suggests the next message, the box offers it
-//! once, selected, so `enter` sends it and typing replaces it; a box the user has typed in
-//! keeps its text, and an untouched offer leaves with its suggestion. Whether a session can take a message, and what sending does to
-//! it, are rules of `lodestar_core::session::SessionStore`; this only forwards.
+//! keyboard back to the window. When the Agent suggests the next message, an empty box shows
+//! it as its placeholder and `tab` makes it the box's text, to send or edit; typed text
+//! hides it and is never replaced. Whether a session can take a message, and what sending
+//! does to it, are rules of `lodestar_core::session::SessionStore`; this only forwards.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -58,7 +58,8 @@ actions!(
         ScrollHalfPageDown,
         ScrollToTop,
         ScrollToBottom,
-        LeaveInput
+        LeaveInput,
+        AcceptSuggestion
     ]
 );
 
@@ -77,6 +78,10 @@ pub enum Scroll {
 /// an empty pane's picker and the sidebar read them.
 pub const TRANSCRIPT_FLAG: &str = "transcript";
 
+/// Set on the window's key context only while the focused pane's input box is empty and its
+/// session has a prompt suggestion, so `tab` accepts it there and indents everywhere else.
+pub const SUGGESTION_FLAG: &str = "suggestion";
+
 /// Keys that scroll the focused pane's Transcript.
 ///
 /// They are plain keys, so they are bound only under [`TRANSCRIPT_FLAG`] and outside any
@@ -91,6 +96,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("g", ScrollToTop, CONTEXT),
         KeyBinding::new("shift-g", ScrollToBottom, CONTEXT),
         KeyBinding::new("escape", LeaveInput, INPUT_CONTEXT),
+        KeyBinding::new(
+            "tab",
+            AcceptSuggestion,
+            Some("MainWindow && suggestion > Input"),
+        ),
     ]);
 }
 
@@ -109,6 +119,11 @@ pub fn on_scroll_actions(element: Div, cx: &mut Context<MainWindow>) -> Div {
         .on_action(
             cx.listener(|this, _: &ScrollToBottom, _, cx| {
                 this.scroll_transcript(Scroll::Bottom, cx)
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &AcceptSuggestion, window, cx| {
+                this.accept_suggestion(window, cx)
             }),
         )
         .on_action(cx.listener(|this, _: &LeaveInput, window, cx| {
@@ -140,13 +155,12 @@ struct PaneTranscript {
     /// The scroll handle. Row heights are measured as rows are drawn.
     list: ListState,
     input: Entity<TextareaState>,
-    /// Keeps the input's events (enter, focus) flowing to the window while the pane lives.
+    /// Keeps the input's events (enter, focus, edits) flowing to the window while the pane
+    /// lives.
     _input_events: Subscription,
-    /// The placeholder the input shows: the invitation to type, or why sending is refused.
-    placeholder: &'static str,
-    /// The suggestion this box was last offered, so each is offered once. When the session
-    /// it came from no longer suggests it, the box drops it if it still holds it untouched.
-    offered: Option<String>,
+    /// The placeholder the input shows: the invitation to type, the Agent's prompt
+    /// suggestion, or why sending is refused.
+    placeholder: SharedString,
     /// Indices of the tool calls the user has expanded.
     expanded: HashSet<usize>,
     /// Whether the list was told to follow its tail, which it does for a running session.
@@ -185,31 +199,14 @@ impl TranscriptViews {
             cx,
         );
         let placeholder = match can_send {
-            Ok(()) => INPUT_PLACEHOLDER,
+            Ok(()) => suggestion.unwrap_or(INPUT_PLACEHOLDER),
             Err(refusal) => refusal.reason(),
         };
         if state.placeholder != placeholder {
-            state.placeholder = placeholder;
+            state.placeholder = SharedString::from(placeholder.to_owned());
             state.input.update(cx, |input, cx| {
-                input.set_placeholder(placeholder, window, cx)
+                input.set_placeholder(state.placeholder.clone(), window, cx)
             });
-        }
-        if state.offered.as_deref() != suggestion {
-            let withdrawn = state.offered.take();
-            state.input.update(cx, |input, cx| {
-                // An offer nobody touched is not the user's text: it goes with its suggestion
-                // (sent from another pane, the session ended, the pane shows another session).
-                if withdrawn.is_some_and(|old| input.value() == old.as_str()) {
-                    input.clean(window, cx);
-                }
-                if let Some(text) = suggestion
-                    && input.value().is_empty()
-                {
-                    input.set_value(text.to_owned(), window, cx);
-                    input.select_all(window, cx);
-                }
-            });
-            state.offered = suggestion.map(str::to_owned);
         }
         let notice = can_send.err().filter(|_| working.is_none()).map(|refusal| {
             div()
@@ -294,6 +291,32 @@ impl TranscriptViews {
             .get(&pane)
             .map(|state| state.input.read(cx).value().to_string())
             .unwrap_or_default()
+    }
+
+    /// Whether `pane`'s input box holds no text at all.
+    pub fn input_is_empty(&self, pane: PaneId, cx: &App) -> bool {
+        self.panes
+            .get(&pane)
+            .is_none_or(|state| state.input.read(cx).value().is_empty())
+    }
+
+    /// Make `text` the content of `pane`'s empty input box, with the cursor at its end. A box
+    /// that holds text keeps it.
+    pub fn accept_suggestion(
+        &mut self,
+        pane: PaneId,
+        text: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(state) = self.panes.get(&pane) {
+            state.input.update(cx, |input, cx| {
+                if input.value().is_empty() {
+                    input.set_value(text.to_owned(), window, cx);
+                    input.set_selected_range(text.len()..text.len(), cx);
+                }
+            });
+        }
     }
 
     /// Empty `pane`'s input box, once its text was sent.
@@ -383,6 +406,8 @@ impl TranscriptViews {
                         this.send_from_input(pane, window, cx)
                     }
                     InputEvent::Focus => this.input_focused(pane, cx),
+                    // Emptiness decides whether `tab` accepts a suggestion (SUGGESTION_FLAG).
+                    InputEvent::Change => cx.notify(),
                     _ => {}
                 },
             );
@@ -391,8 +416,7 @@ impl TranscriptViews {
                 list: ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW),
                 input,
                 _input_events: input_events,
-                placeholder: INPUT_PLACEHOLDER,
-                offered: None,
+                placeholder: INPUT_PLACEHOLDER.into(),
                 expanded: HashSet::new(),
                 follows_tail: false,
                 items: item_count,
