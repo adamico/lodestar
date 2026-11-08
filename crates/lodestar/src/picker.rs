@@ -10,7 +10,7 @@ use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::picker::{PickerEntry, PickerList, PickerState};
-use lodestar_core::session::Project;
+use lodestar_core::session::{Project, ProjectId, SessionId, SessionUpdate};
 use lodestar_core::window::PaneId;
 
 use crate::main_window::{MainWindow, pane_element_id, status_color, status_dot};
@@ -173,13 +173,26 @@ impl MainWindow {
         }
     }
 
-    /// Start a new session in the Project at `path` and show it in `pane`.
+    /// Start a new session in the Project at `path`, show it in `pane`, and start its Agent.
+    /// The Agent gets nothing until the user sends the first message from the input box; the
+    /// session waits for input until then. A session whose Agent could not start is done at
+    /// once.
     fn start_session_in(&mut self, path: PathBuf, pane: PaneId) {
         let project = self.sessions.find_or_create_project(path.clone());
         self.sessions.add_recent_folder(path);
         let session = self.sessions.create_session(project);
         self.window_model.open_session(session, pane);
         self.pickers.remove(&pane);
+        self.start_agent(session, project);
+    }
+
+    fn start_agent(&mut self, session: SessionId, project: ProjectId) {
+        let Some(project) = self.sessions.project(project).cloned() else {
+            return;
+        };
+        if let Err(error) = self.source.start_agent(session, &project) {
+            self.sessions.apply(SessionUpdate::Ended { session, error });
+        }
     }
 
     /// Ask the system for a folder, then start a session there.

@@ -310,8 +310,25 @@ mod picker_selection {
 mod updates {
     use super::new_sessions::Fixtures;
     use lodestar_core::session::{
-        SessionId, SessionStatus, SessionStore, SessionUpdate, TranscriptItem,
+        SessionId, SessionStatus, SessionStore, SessionUpdate, ToolCall, TranscriptItem,
     };
+
+    fn pending_call(id: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: "Bash".into(),
+            summary: "cargo test".into(),
+            input: "cargo test".into(),
+            output: None,
+        }
+    }
+
+    fn call_with(id: &str, output: &str) -> ToolCall {
+        ToolCall {
+            output: Some(output.into()),
+            ..pending_call(id)
+        }
+    }
 
     #[test]
     fn an_applied_transcript_item_is_appended_after_everything_so_far() {
@@ -342,6 +359,24 @@ mod updates {
                 .items()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn an_applied_error_ends_the_transcript_so_the_user_sees_why_it_stopped() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::Error("claude exited (code 1)".into()),
+        });
+
+        assert_eq!(
+            store.session(SessionId(1)).unwrap().transcript.items(),
+            [
+                TranscriptItem::User("Hello".into()),
+                TranscriptItem::Error("claude exited (code 1)".into()),
+            ]
         );
     }
 
@@ -377,6 +412,411 @@ mod updates {
         assert_eq!(
             store.sessions_newest_first(),
             before.sessions_newest_first()
+        );
+    }
+
+    #[test]
+    fn a_tool_result_fills_the_output_of_the_pending_call_with_its_id() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::ToolCall(pending_call("toolu_1")),
+        });
+
+        store.apply(SessionUpdate::ToolResult {
+            session: SessionId(1),
+            call_id: "toolu_1".into(),
+            output: "4 passed".into(),
+        });
+
+        assert_eq!(
+            store.session(SessionId(1)).unwrap().transcript.items(),
+            [
+                TranscriptItem::User("Hello".into()),
+                TranscriptItem::ToolCall(call_with("toolu_1", "4 passed")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tool_result_still_finds_its_call_after_more_items_were_pushed() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::ToolCall(pending_call("toolu_1")),
+        });
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::Assistant("Still running...".into()),
+        });
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::ToolCall(pending_call("toolu_2")),
+        });
+
+        store.apply(SessionUpdate::ToolResult {
+            session: SessionId(1),
+            call_id: "toolu_1".into(),
+            output: "4 passed".into(),
+        });
+
+        assert_eq!(
+            store.session(SessionId(1)).unwrap().transcript.items(),
+            [
+                TranscriptItem::User("Hello".into()),
+                TranscriptItem::ToolCall(call_with("toolu_1", "4 passed")),
+                TranscriptItem::Assistant("Still running...".into()),
+                TranscriptItem::ToolCall(pending_call("toolu_2")),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_ended_session_is_done_with_its_error_last_and_no_call_left_pending() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let before = store
+            .session(SessionId(0))
+            .unwrap()
+            .transcript
+            .items()
+            .len();
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(0),
+            item: TranscriptItem::ToolCall(pending_call("toolu_1")),
+        });
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(0),
+            item: TranscriptItem::ToolCall(call_with("toolu_2", "4 passed")),
+        });
+
+        store.apply(SessionUpdate::Ended {
+            session: SessionId(0),
+            error: "claude exited (code 1).".into(),
+        });
+
+        let session = store.session(SessionId(0)).unwrap();
+        assert_eq!(session.status, SessionStatus::Done);
+        assert_eq!(
+            session.transcript.items()[before..],
+            [
+                TranscriptItem::ToolCall(call_with("toolu_1", "No result: the Agent exited.")),
+                TranscriptItem::ToolCall(call_with("toolu_2", "4 passed")),
+                TranscriptItem::Error("claude exited (code 1).".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_update_names_its_session() {
+        let updates = [
+            SessionUpdate::TranscriptItem {
+                session: SessionId(4),
+                item: TranscriptItem::Assistant("Hi".into()),
+            },
+            SessionUpdate::Status {
+                session: SessionId(4),
+                status: SessionStatus::Done,
+            },
+            SessionUpdate::ToolResult {
+                session: SessionId(4),
+                call_id: "toolu_1".into(),
+                output: "ok".into(),
+            },
+            SessionUpdate::Ended {
+                session: SessionId(4),
+                error: "gone".into(),
+            },
+        ];
+
+        assert!(
+            updates
+                .iter()
+                .all(|update| update.session() == SessionId(4))
+        );
+    }
+
+    #[test]
+    fn a_tool_result_for_an_unknown_call_changes_nothing() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::ToolCall(pending_call("toolu_1")),
+        });
+        let before = store.clone();
+
+        store.apply(SessionUpdate::ToolResult {
+            session: SessionId(1),
+            call_id: "toolu_404".into(),
+            output: "lost".into(),
+        });
+
+        assert_eq!(
+            store.sessions_newest_first(),
+            before.sessions_newest_first()
+        );
+    }
+}
+
+mod sending {
+    use std::time::Duration;
+
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{
+        ProjectId, SendRefusal, SessionId, SessionStatus, SessionStore, TranscriptItem,
+    };
+
+    #[test]
+    fn a_message_sent_to_a_waiting_session_is_in_its_transcript_and_it_runs() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        let sent = store.send(session, "Add a README.", Duration::ZERO);
+
+        assert_eq!(sent, Ok(()));
+        let session = store.session(session).unwrap();
+        assert_eq!(
+            session.transcript.items(),
+            [TranscriptItem::User("Add a README.".into())]
+        );
+        assert_eq!(session.status, SessionStatus::Running);
+    }
+
+    #[test]
+    fn a_running_session_refuses_a_message_and_keeps_its_transcript() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+        store.send(session, "First.", Duration::ZERO).unwrap();
+
+        let sent = store.send(session, "Second.", Duration::ZERO);
+
+        assert_eq!(sent, Err(SendRefusal::AgentRunning));
+        assert_eq!(
+            store.session(session).unwrap().transcript.items(),
+            [TranscriptItem::User("First.".into())]
+        );
+    }
+
+    #[test]
+    fn a_done_session_refuses_a_message() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        let sent = store.send(SessionId(0), "Anyone there?", Duration::ZERO);
+
+        assert_eq!(sent, Err(SendRefusal::SessionDone));
+        assert_eq!(
+            store.session(SessionId(0)).unwrap().status,
+            SessionStatus::Done
+        );
+    }
+
+    #[test]
+    fn a_blank_message_is_not_sent() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        let sent = store.send(session, "  \n ", Duration::ZERO);
+
+        assert_eq!(sent, Err(SendRefusal::Blank));
+        assert!(
+            store
+                .session(session)
+                .unwrap()
+                .transcript
+                .items()
+                .is_empty()
+        );
+        assert_eq!(
+            store.session(session).unwrap().status,
+            SessionStatus::WaitingForInput
+        );
+    }
+
+    #[test]
+    fn a_message_for_an_unknown_session_is_refused() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        assert_eq!(
+            store.send(SessionId(99), "Hello?", Duration::ZERO),
+            Err(SendRefusal::UnknownSession)
+        );
+    }
+
+    #[test]
+    fn can_send_answers_without_sending() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        assert_eq!(store.can_send(session), Ok(()));
+        assert_eq!(store.can_send(SessionId(0)), Err(SendRefusal::SessionDone));
+        assert!(
+            store
+                .session(session)
+                .unwrap()
+                .transcript
+                .items()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn each_refusal_explains_itself_in_one_line() {
+        assert_eq!(
+            SendRefusal::AgentRunning.reason(),
+            "Agent is running; wait for it to finish"
+        );
+        assert_eq!(SendRefusal::SessionDone.reason(), "Session is done");
+        for refusal in [
+            SendRefusal::AgentRunning,
+            SendRefusal::SessionDone,
+            SendRefusal::Blank,
+            SendRefusal::UnknownSession,
+        ] {
+            assert!(!refusal.reason().contains('\n'));
+        }
+    }
+}
+
+mod turn_progress {
+    use std::time::Duration;
+
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{
+        ProjectId, SessionId, SessionStatus, SessionStore, SessionUpdate,
+    };
+    use lodestar_core::turn::{Phase, TurnProgress};
+
+    fn running(at: Duration) -> (SessionStore, SessionId) {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+        store.send(session, "Go.", at).unwrap();
+        (store, session)
+    }
+
+    fn progress(session: SessionId, phase: Phase, output_tokens: u64) -> SessionUpdate {
+        SessionUpdate::Progress {
+            session,
+            phase,
+            output_tokens,
+        }
+    }
+
+    #[test]
+    fn progress_moves_the_turn_to_its_phase_and_token_count_but_keeps_its_start() {
+        let (mut store, session) = running(Duration::from_secs(5));
+
+        store.apply(progress(session, Phase::Thinking, 120));
+        store.apply(progress(session, Phase::Tool("Bash".into()), 340));
+
+        assert_eq!(
+            store.turn(session),
+            Some(&TurnProgress {
+                started: Duration::from_secs(5),
+                phase: Phase::Tool("Bash".into()),
+                output_tokens: 340,
+            })
+        );
+    }
+
+    #[test]
+    fn the_turn_is_gone_once_the_session_waits_for_input_or_is_done_or_ended() {
+        let ends = [
+            |session| SessionUpdate::Status {
+                session,
+                status: SessionStatus::WaitingForInput,
+            },
+            |session| SessionUpdate::Status {
+                session,
+                status: SessionStatus::Done,
+            },
+            |session| SessionUpdate::Ended {
+                session,
+                error: "claude exited (code 1).".into(),
+            },
+        ];
+        for end in ends {
+            let (mut store, session) = running(Duration::ZERO);
+
+            store.apply(end(session));
+
+            assert_eq!(store.turn(session), None);
+        }
+    }
+
+    #[test]
+    fn progress_for_a_session_without_a_turn_is_dropped() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        store.apply(progress(session, Phase::Writing, 10));
+
+        assert_eq!(store.turn(session), None);
+    }
+
+    #[test]
+    fn a_session_already_running_at_startup_has_a_turn_from_the_start_of_the_clock() {
+        let store = SessionStore::load(&mut super::OneSession);
+
+        assert_eq!(
+            store.turn(SessionId(0)),
+            Some(&TurnProgress {
+                started: Duration::ZERO,
+                phase: Phase::Working,
+                output_tokens: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn sending_a_message_starts_a_turn_that_is_working_from_that_moment() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+        assert_eq!(store.turn(session), None);
+
+        store
+            .send(session, "Add a README.", Duration::from_secs(42))
+            .unwrap();
+
+        assert_eq!(
+            store.turn(session),
+            Some(&TurnProgress {
+                started: Duration::from_secs(42),
+                phase: Phase::Working,
+                output_tokens: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn only_a_running_session_has_a_working_line_counting_from_its_turn_start() {
+        let (mut store, session) = running(Duration::from_secs(5));
+        store.apply(progress(session, Phase::Thinking, 1500));
+
+        assert_eq!(
+            store.working_line(session, Duration::from_secs(60)),
+            Some("55s \u{b7} 1.5k tokens \u{b7} Thinking".into())
+        );
+
+        store.apply(SessionUpdate::Status {
+            session,
+            status: SessionStatus::WaitingForInput,
+        });
+
+        assert_eq!(store.working_line(session, Duration::from_secs(61)), None);
+    }
+
+    #[test]
+    fn a_session_set_running_without_a_turn_just_says_it_is_working() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        store.apply(SessionUpdate::Status {
+            session,
+            status: SessionStatus::Running,
+        });
+
+        assert_eq!(
+            store.working_line(session, Duration::from_secs(9)),
+            Some("Working".into())
         );
     }
 }

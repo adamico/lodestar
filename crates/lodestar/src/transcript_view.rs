@@ -1,33 +1,53 @@
-//! A pane's Transcript: a virtualised list of its items and the (disabled) input box below.
+//! A pane's Transcript: a virtualised list of its items and the input box below.
 //!
 //! The list is GPUI's `list`, which measures each row as it is drawn, so markdown of any
 //! height works. Its `ListState` is the per-pane scroll handle. A pane whose session is
 //! running follows the tail: new rows keep the end in view until the user scrolls up, which
-//! pauses following and shows a "Jump to latest" pill that resumes it.
+//! pauses following. Once the last item is out of view, a "Jump to latest" pill offers to
+//! resume it.
+//!
+//! While the session runs, the working indicator sits just above the input box: a spinner
+//! and the store's working line (`55s · 1.5k tokens · Thinking`). It stands in for the
+//! refusal notice, which would only repeat that the Agent is running. The window re-renders
+//! at least every poll while a session runs, so its seconds tick.
+//!
+//! The input box sends on `enter` (`shift+enter` inserts a newline) and `escape` hands the
+//! keyboard back to the window. Whether a session can take a message, and what sending does to
+//! it, are rules of `lodestar_core::session::SessionStore`; this only forwards.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use gpui_kit::component::collapsible::Collapsible;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lodestar_core::session::{SessionId, Transcript, TranscriptItem};
+use lodestar_core::session::{SendRefusal, Session, SessionId, SessionStatus, TranscriptItem};
 use lodestar_core::window::PaneId;
 
 use crate::main_window::{MainWindow, pane_element_id};
 
 /// Rows GPUI lays out beyond the visible part of the list, so scrolling stays smooth.
 const LIST_OVERDRAW: Pixels = px(400.);
-const INPUT_PLACEHOLDER: &str = "Message the agent";
-const INPUT_TOOLTIP: &str = "Sending arrives in Milestone 2";
+const INPUT_PLACEHOLDER: &str = "Message the agent (enter sends, shift+enter for a newline)";
+/// How many rows the input box grows to before it scrolls.
+const INPUT_MAX_ROWS: usize = 6;
 const USER_MARKER: &str = "You";
+const ERROR_MARKER: &str = "Error";
 const COLLAPSED_MARKER: &str = "\u{25B8}";
 const EXPANDED_MARKER: &str = "\u{25BE}";
+/// Shown after a pending tool call's headline, until its result arrives.
+const PENDING_MARKER: &str = "\u{22EF} pending";
+const PENDING_OUTPUT: &str = "(pending)";
 const JUMP_TO_LATEST: &str = "\u{2193} Jump to latest";
+/// How many dots the working spinner has, and how long one sweep across them takes.
+const SPINNER_DOTS: usize = 3;
+const SPINNER_PERIOD: Duration = Duration::from_millis(900);
+/// The spinner's frame rate cap: smooth enough, without drawing every frame.
+const SPINNER_FPS: f32 = 30.;
 
 actions!(
     lodestar,
@@ -35,7 +55,8 @@ actions!(
         ScrollHalfPageUp,
         ScrollHalfPageDown,
         ScrollToTop,
-        ScrollToBottom
+        ScrollToBottom,
+        LeaveInput
     ]
 );
 
@@ -60,11 +81,14 @@ pub const TRANSCRIPT_FLAG: &str = "transcript";
 /// focused text input.
 pub fn bind_keys(cx: &mut App) {
     const CONTEXT: Option<&str> = Some("MainWindow && transcript && !Input");
+    /// Bindings that apply only while one of the window's text inputs has the keyboard.
+    const INPUT_CONTEXT: Option<&str> = Some("MainWindow > Input");
     cx.bind_keys([
         KeyBinding::new("ctrl-u", ScrollHalfPageUp, CONTEXT),
         KeyBinding::new("ctrl-d", ScrollHalfPageDown, CONTEXT),
         KeyBinding::new("g", ScrollToTop, CONTEXT),
         KeyBinding::new("shift-g", ScrollToBottom, CONTEXT),
+        KeyBinding::new("escape", LeaveInput, INPUT_CONTEXT),
     ]);
 }
 
@@ -85,6 +109,10 @@ pub fn on_scroll_actions(element: Div, cx: &mut Context<MainWindow>) -> Div {
                 this.scroll_transcript(Scroll::Bottom, cx)
             }),
         )
+        .on_action(cx.listener(|this, _: &LeaveInput, window, cx| {
+            window.focus(&this.focus_handle(), cx);
+            cx.notify();
+        }))
 }
 
 /// The view state of every pane that shows a Transcript, keyed by pane.
@@ -99,36 +127,66 @@ struct PaneTranscript {
     session: SessionId,
     /// The scroll handle. Row heights are measured as rows are drawn.
     list: ListState,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
+    /// Keeps the input's events (enter, focus) flowing to the window while the pane lives.
+    _input_events: Subscription,
+    /// The placeholder the input shows: the invitation to type, or why sending is refused.
+    placeholder: &'static str,
     /// Indices of the tool calls the user has expanded.
     expanded: HashSet<usize>,
     /// Whether the list was told to follow its tail, which it does for a running session.
     follows_tail: bool,
+    /// How many Transcript items the list has rows for.
+    items: usize,
 }
 
 impl TranscriptViews {
-    /// Render `transcript` in `pane`: the list above, the disabled input box below.
+    /// Render `session`'s Transcript in `pane`: the list above, the input box below.
     ///
-    /// While `streaming`, the list follows new items; once the user scrolls up, a pill over
-    /// the bottom of the list offers to jump back to the latest.
+    /// While the session runs, the list follows new items; once the user scrolls up, a pill
+    /// over the bottom of the list offers to jump back to the latest. `can_send` is the
+    /// store's answer on whether the session takes a message now; a refusal is shown by the
+    /// box. `working` is the working indicator's line, shown just above the input box while
+    /// the session runs.
     pub fn render(
         &mut self,
         pane: PaneId,
-        session: SessionId,
-        transcript: &Transcript,
-        streaming: bool,
+        session: &Session,
+        can_send: Result<(), SendRefusal>,
+        working: Option<String>,
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> impl IntoElement + use<> {
+        let transcript = &session.transcript;
+        let streaming = session.status == SessionStatus::Running;
         let state = self.sync(
             pane,
-            session,
+            session.id,
             transcript.items().len(),
             streaming,
             window,
             cx,
         );
-        let paused = streaming && !state.list.is_following_tail();
+        let placeholder = match can_send {
+            Ok(()) => INPUT_PLACEHOLDER,
+            Err(refusal) => refusal.reason(),
+        };
+        if state.placeholder != placeholder {
+            state.placeholder = placeholder;
+            state.input.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx)
+            });
+        }
+        let notice = can_send.err().filter(|_| working.is_none()).map(|refusal| {
+            div()
+                .px_1()
+                .pb_1()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(refusal.reason())
+        });
+        let disabled = can_send == Err(SendRefusal::SessionDone);
+        let paused = streaming && !state.list.is_following_tail() && !last_item_shown(&state.list);
         let items = transcript.items().to_vec();
         let expanded = state.expanded.clone();
         let this = cx.weak_entity();
@@ -136,7 +194,9 @@ impl TranscriptViews {
         let list_for_scrollbar = list_state.clone();
 
         let list = list(list_state, move |ix, _, cx| {
-            let item = &items[ix];
+            let Some(item) = items.get(ix) else {
+                return div().into_any_element();
+            };
             div()
                 .w_full()
                 .min_w_0()
@@ -148,6 +208,7 @@ impl TranscriptViews {
                     TranscriptItem::Assistant(markdown) => {
                         render_assistant(pane, ix, markdown).into_any_element()
                     }
+                    TranscriptItem::Error(message) => render_error(message, cx).into_any_element(),
                     TranscriptItem::ToolCall(call) => {
                         let this = this.clone();
                         let toggle = move |cx: &mut App| {
@@ -181,15 +242,31 @@ impl TranscriptViews {
                     .when(paused, |this| this.child(render_jump_to_latest(pane, cx))),
             )
             .child(
-                div()
+                v_flex()
                     .id(pane_element_id("input", pane))
                     .flex_shrink_0()
                     .p_2()
                     .border_t_1()
                     .border_color(cx.theme().border)
-                    .tooltip(|window, cx| Tooltip::new(INPUT_TOOLTIP).build(window, cx))
-                    .child(Input::new(&state.input).disabled(true)),
+                    .children(working.map(|line| render_working(pane, line, cx)))
+                    .children(notice)
+                    .child(Textarea::new(&state.input).disabled(disabled)),
             )
+    }
+
+    /// What the user has typed into `pane`'s input box.
+    pub fn input_text(&self, pane: PaneId, cx: &App) -> String {
+        self.panes
+            .get(&pane)
+            .map(|state| state.input.read(cx).value().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Empty `pane`'s input box, once its text was sent.
+    pub fn clear_input(&mut self, pane: PaneId, window: &mut Window, cx: &mut App) {
+        if let Some(state) = self.panes.get(&pane) {
+            state.input.update(cx, |input, cx| input.clean(window, cx));
+        }
     }
 
     /// Show or hide the input and output of the tool call at `ix` in `pane`.
@@ -254,16 +331,36 @@ impl TranscriptViews {
         streaming: bool,
         window: &mut Window,
         cx: &mut Context<MainWindow>,
-    ) -> &PaneTranscript {
+    ) -> &mut PaneTranscript {
         let mut fresh = false;
         let state = self.panes.entry(pane).or_insert_with(|| {
             fresh = true;
+            let input = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .placeholder(INPUT_PLACEHOLDER)
+                    .submit_on_enter(true)
+                    .auto_grow(1, INPUT_MAX_ROWS)
+            });
+            let input_events = cx.subscribe_in(
+                &input,
+                window,
+                move |this, _, event, window, cx| match event {
+                    InputEvent::PressEnter { shift: false, .. } => {
+                        this.send_from_input(pane, window, cx)
+                    }
+                    InputEvent::Focus => this.input_focused(pane, cx),
+                    _ => {}
+                },
+            );
             PaneTranscript {
                 session,
                 list: ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW),
-                input: cx.new(|cx| InputState::new(window, cx).placeholder(INPUT_PLACEHOLDER)),
+                input,
+                _input_events: input_events,
+                placeholder: INPUT_PLACEHOLDER,
                 expanded: HashSet::new(),
                 follows_tail: false,
+                items: item_count,
             }
         });
         if state.session != session {
@@ -271,13 +368,11 @@ impl TranscriptViews {
             state.session = session;
             state.expanded.clear();
             state.list.reset(item_count);
-        } else {
-            let known = state.list.item_count();
-            if item_count != known {
-                let kept = known.min(item_count);
-                state.list.splice(kept..known, item_count - kept);
-            }
+        } else if item_count != state.items {
+            let kept = state.items.min(item_count);
+            state.list.splice(kept..state.items, item_count - kept);
         }
+        state.items = item_count;
         if fresh {
             state.follows_tail = streaming;
             state.list.set_follow_mode(if streaming {
@@ -288,6 +383,19 @@ impl TranscriptViews {
         }
         state
     }
+}
+
+/// Whether any part of the list's last item was on screen at the last layout.
+///
+/// The "Jump to latest" pill shows only when the user scrolled up far enough to lose it: a
+/// paused list whose last item is still in view needs no way back to it.
+fn last_item_shown(list: &ListState) -> bool {
+    let Some(last) = list.item_count().checked_sub(1) else {
+        return true;
+    };
+    let viewport = list.viewport_bounds();
+    list.bounds_for_item(last)
+        .is_some_and(|item| item.top() < viewport.bottom() && item.bottom() > viewport.top())
 }
 
 fn item_element_id(pane: PaneId, ix: usize, what: &str) -> ElementId {
@@ -322,6 +430,46 @@ fn render_jump_to_latest(pane: PaneId, cx: &mut Context<MainWindow>) -> impl Int
         )
 }
 
+/// The working indicator: an orange spinner, then `line` in muted text.
+fn render_working(pane: PaneId, line: String, cx: &App) -> impl IntoElement {
+    h_flex()
+        .px_1()
+        .pb_2()
+        .gap_2()
+        .text_color(cx.theme().muted_foreground)
+        .child(render_spinner(pane))
+        .child(line)
+}
+
+/// Three orange dots on a diagonal, a bright one sweeping across them and fading behind.
+fn render_spinner(pane: PaneId) -> impl IntoElement {
+    let dot = |ix: usize| {
+        let lead = ix as f32 / SPINNER_DOTS as f32;
+        div()
+            .size(px(4.))
+            .rounded_full()
+            .bg(gpui_kit::component::theme::orange_500())
+            .with_animation(
+                item_element_id(pane, ix, "working-dot"),
+                Animation::new(SPINNER_PERIOD)
+                    .repeat_synced()
+                    .with_max_fps(SPINNER_FPS),
+                move |dot, delta| {
+                    let since_lit = (delta - lead).rem_euclid(1.);
+                    dot.opacity(0.25 + 0.75 * (1. - since_lit))
+                },
+            )
+    };
+    div()
+        .relative()
+        .size(px(12.))
+        .flex_shrink_0()
+        .children((0..SPINNER_DOTS).map(|ix| {
+            let offset = px(4. * ix as f32);
+            div().absolute().left(offset).top(offset).child(dot(ix))
+        }))
+}
+
 /// A user message: a marker and the text on an accent-tinted card.
 fn render_user(text: &str, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
@@ -342,13 +490,34 @@ fn render_user(text: &str, cx: &App) -> impl IntoElement {
         .child(div().child(text.to_string()))
 }
 
+/// An error: why the session stopped, on a danger-tinted card.
+fn render_error(message: &str, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    v_flex()
+        .gap_1()
+        .p_2()
+        .rounded_md()
+        .bg(theme.secondary)
+        .border_l_2()
+        .border_color(theme.danger)
+        .child(
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(theme.danger)
+                .child(ERROR_MARKER),
+        )
+        .child(div().child(message.to_string()))
+}
+
 /// An assistant message: its markdown, rendered without syntax highlighting.
 fn render_assistant(pane: PaneId, ix: usize, markdown: &str) -> impl IntoElement {
     TextView::markdown(item_element_id(pane, ix, "assistant"), markdown.to_string())
         .selectable(true)
 }
 
-/// A tool call: its headline, and its input and output in monospace when expanded.
+/// A tool call: its headline (with a pending marker until the result arrives), and its input
+/// and output in monospace when expanded.
 fn render_tool_call(
     pane: PaneId,
     ix: usize,
@@ -378,7 +547,24 @@ fn render_tool_call(
             div()
                 .font_family(theme.mono_font_family.clone())
                 .child(call.headline()),
-        );
+        )
+        .when(call.is_pending(), |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .flex_shrink_0()
+                    .text_color(theme.warning)
+                    .child(PENDING_MARKER),
+            )
+        });
+    let output = match &call.output {
+        Some(output) => monospace_block("Output", output, cx).into_any_element(),
+        None => div()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child(PENDING_OUTPUT)
+            .into_any_element(),
+    };
 
     Collapsible::new()
         .open(expanded)
@@ -394,7 +580,7 @@ fn render_tool_call(
                 .border_t_1()
                 .border_color(theme.border)
                 .child(monospace_block("Input", &call.input, cx))
-                .child(monospace_block("Output", &call.output, cx)),
+                .child(output),
         )
 }
 

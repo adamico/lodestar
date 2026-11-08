@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::geometry::{Point, Rect, Size};
@@ -41,7 +41,7 @@ pub struct MainWindow {
     pub(crate) sessions: SessionStore,
     /// Where updates to the sessions come from. Polled on a timer for as long as the window
     /// lives, whether or not the sessions they touch are shown.
-    source: Box<dyn SessionSource>,
+    pub(crate) source: Box<dyn SessionSource>,
     /// When polling started; the source's clock counts from here.
     started: Instant,
     /// The timer loop that polls the source. Dropped with the window.
@@ -93,16 +93,48 @@ impl MainWindow {
     }
 
     /// Apply whatever the source has for us by now. Sidebar dots, pane headers and
-    /// Transcripts all render the store, so one notify refreshes them all.
+    /// Transcripts all render the store, so one notify refreshes them all. While a session
+    /// runs, every tick re-renders, so its working indicator's seconds keep counting.
     fn pump_updates(&mut self, cx: &mut Context<Self>) {
         let updates = self.source.poll_updates(self.started.elapsed());
         let changed = !updates.is_empty();
         for update in updates {
             self.sessions.apply(update);
         }
-        if changed || self.transcripts.any_paused() {
+        let running = self
+            .sessions
+            .sessions_newest_first()
+            .iter()
+            .any(|session| session.status == SessionStatus::Running);
+        if changed || running || self.transcripts.any_paused() {
             cx.notify();
         }
+    }
+
+    /// Send what `pane`'s input box holds to the session it shows. The store decides whether
+    /// the session takes a message now and records it; only then does the text reach the
+    /// Agent. A refusal leaves the text in the box, and the box says why.
+    pub fn send_from_input(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.window_model.session_in(pane) else {
+            return;
+        };
+        let text = self.transcripts.input_text(pane, cx);
+        if self
+            .sessions
+            .send(session, &text, self.started.elapsed())
+            .is_ok()
+        {
+            self.source.send_message(session, &text);
+            self.transcripts.clear_input(pane, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The input box of `pane` took the keyboard: the pane is focused and the sidebar is not.
+    pub fn input_focused(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        self.window_model.focus(pane);
+        self.sidebar.blur();
+        cx.notify();
     }
 
     /// Scroll `pane`'s Transcript to the latest item and follow new ones again.
@@ -174,11 +206,14 @@ impl MainWindow {
 
     /// While the leader is pending, the next key is a command or ends the mode. In resize mode,
     /// `h`/`j`/`k`/`l` keep resizing until `esc` (bound to [`CancelLeader`]). Otherwise keys
-    /// go to the sidebar while it is focused, else to the focused pane's picker if that pane
-    /// is empty.
+    /// go to a focused text input if there is one, else to the sidebar while it is focused,
+    /// else to the focused pane's picker if that pane is empty.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         match self.mode {
             Mode::Normal => {
+                if window.has_focused_input(cx) {
+                    return;
+                }
                 if self.sidebar.is_focused() {
                     self.on_sidebar_key(event, cx);
                 } else if self.picker_key_down(event, cx) {
@@ -491,9 +526,10 @@ impl MainWindow {
                 .transcripts
                 .render(
                     pane,
-                    session.id,
-                    &session.transcript,
-                    session.status == SessionStatus::Running,
+                    session,
+                    self.sessions.can_send(session.id),
+                    self.sessions
+                        .working_line(session.id, self.started.elapsed()),
                     window,
                     cx,
                 )

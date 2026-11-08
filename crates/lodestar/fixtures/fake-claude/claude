@@ -1,0 +1,5 @@
+#!/bin/sh
+# A stand-in for the `claude` binary in tests. It is committed, never written at runtime, so
+# exec'ing it cannot hit ETXTBSY. It runs the script `fake-claude-body` from its working
+# directory (the Project the test started it in); sh only reads that file.
+exec /bin/sh ./fake-claude-body "$@"

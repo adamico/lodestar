@@ -88,7 +88,7 @@ enum FixtureStreamEvent {
 }
 
 impl FixtureStreamEvent {
-    fn into_update(self, session: SessionId) -> SessionUpdate {
+    fn into_update(self, session: SessionId, ids: &mut CallIds) -> SessionUpdate {
         let item = match self {
             FixtureStreamEvent::User(text) => FixtureItem::User(text),
             FixtureStreamEvent::Assistant(markdown) => FixtureItem::Assistant(markdown),
@@ -102,8 +102,20 @@ impl FixtureStreamEvent {
         };
         SessionUpdate::TranscriptItem {
             session,
-            item: item.into(),
+            item: item.into_transcript_item(ids),
         }
+    }
+}
+
+/// Hands every fixture tool call an id of its own, as a real Agent would, so a
+/// `SessionUpdate::ToolResult` could address it.
+#[derive(Default)]
+struct CallIds(u64);
+
+impl CallIds {
+    fn next(&mut self) -> String {
+        self.0 += 1;
+        format!("fixture-call-{}", self.0)
     }
 }
 
@@ -128,16 +140,17 @@ struct FixtureToolCall {
     output: String,
 }
 
-impl From<FixtureItem> for TranscriptItem {
-    fn from(item: FixtureItem) -> Self {
-        match item {
+impl FixtureItem {
+    fn into_transcript_item(self, ids: &mut CallIds) -> TranscriptItem {
+        match self {
             FixtureItem::User(text) => TranscriptItem::User(text),
             FixtureItem::Assistant(markdown) => TranscriptItem::Assistant(markdown),
             FixtureItem::ToolCall(call) => TranscriptItem::ToolCall(ToolCall {
+                id: ids.next(),
                 name: call.name,
                 summary: call.summary,
                 input: call.input,
-                output: call.output,
+                output: Some(call.output),
             }),
         }
     }
@@ -174,6 +187,7 @@ impl FixtureFile {
             })
             .collect();
         let mut stream = Vec::new();
+        let mut ids = CallIds::default();
         let sessions = self
             .sessions
             .into_iter()
@@ -187,7 +201,7 @@ impl FixtureFile {
                 stream.extend(session.stream.into_iter().map(|step| {
                     (
                         Duration::from_millis(step.after_ms),
-                        step.event.into_update(id),
+                        step.event.into_update(id, &mut ids),
                     )
                 }));
                 Session {
@@ -197,7 +211,11 @@ impl FixtureFile {
                     status: session.status.into(),
                     started_at: session.started_at,
                     transcript: Transcript::new(
-                        session.transcript.into_iter().map(Into::into).collect(),
+                        session
+                            .transcript
+                            .into_iter()
+                            .map(|item| item.into_transcript_item(&mut ids))
+                            .collect(),
                     ),
                 }
             })
@@ -262,10 +280,7 @@ mod tests {
             .filter_map(|session| {
                 let own: Vec<SessionUpdate> = updates
                     .iter()
-                    .filter(|update| match update {
-                        SessionUpdate::TranscriptItem { session: id, .. }
-                        | SessionUpdate::Status { session: id, .. } => *id == session.id,
-                    })
+                    .filter(|update| update.session() == session.id)
                     .cloned()
                     .collect();
                 (!own.is_empty()).then_some((session, own))
@@ -319,5 +334,18 @@ mod tests {
                 .poll_updates(Duration::from_secs(48 * 60 * 60))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_fixture_agent_starts_and_takes_messages_without_streaming_anything() {
+        let mut source = FixtureSource::new();
+        let InitialSessions { projects, .. } = source.initial_sessions();
+        let project = projects.first().unwrap().clone();
+
+        let started = source.start_agent(SessionId(99), &project);
+        source.send_message(SessionId(99), "Say hello in one sentence.");
+
+        assert_eq!(started, Ok(()));
+        assert!(source.poll_updates(Duration::ZERO).is_empty());
     }
 }
