@@ -5,6 +5,7 @@
 //! [`LeaderCommand::ALL`] for the hint popup, and one arm where the window runs the command.
 
 use gpui_kit::*;
+use lodestar_core::window::Direction;
 
 gpui_kit::actions!(lodestar, [Leader, CancelLeader]);
 
@@ -12,13 +13,20 @@ gpui_kit::actions!(lodestar, [Leader, CancelLeader]);
 pub const WINDOW_CONTEXT: &str = "MainWindow";
 /// Set on the root element's key context while the leader is pending.
 pub const LEADER_FLAG: &str = "leader";
+/// Set on the root element's key context while resize mode is on.
+pub const RESIZE_FLAG: &str = "resize";
 /// The key context of bindings that only apply while the leader is pending.
 const LEADER_CONTEXT: &str = "MainWindow && leader";
+/// The key context of bindings that only apply in resize mode.
+const RESIZE_CONTEXT: &str = "MainWindow && resize";
+/// How far one `h`/`j`/`k`/`l` in resize mode moves a divider, in logical pixels.
+pub const RESIZE_STEP: f32 = 40.0;
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-space", Leader, Some(WINDOW_CONTEXT)),
         KeyBinding::new("escape", CancelLeader, Some(LEADER_CONTEXT)),
+        KeyBinding::new("escape", CancelLeader, Some(RESIZE_CONTEXT)),
     ]);
 }
 
@@ -30,6 +38,58 @@ pub enum Mode {
     Normal,
     /// The leader was pressed; the next key is a [`LeaderCommand`] or `esc`.
     Leader,
+    /// Sticky resize mode: `h`/`j`/`k`/`l` resize the focused pane until `esc`.
+    Resize,
+}
+
+/// What the hint popup shows for a mode.
+pub struct Hints {
+    pub title: &'static str,
+    pub rows: Vec<(&'static str, &'static str)>,
+    pub footer: &'static str,
+}
+
+const RESIZE_HINTS: &[(&str, &str)] = &[
+    ("h", "grow left"),
+    ("j", "grow down"),
+    ("k", "grow up"),
+    ("l", "grow right"),
+];
+
+impl Mode {
+    /// The hint popup for this mode, if it shows one.
+    pub fn hints(self) -> Option<Hints> {
+        match self {
+            Mode::Normal => None,
+            Mode::Leader => Some(Hints {
+                title: "ctrl+space, then",
+                rows: LeaderCommand::ALL
+                    .iter()
+                    .map(|(key, label, _)| (*key, *label))
+                    .collect(),
+                footer: "esc to cancel",
+            }),
+            Mode::Resize => Some(Hints {
+                title: "resize",
+                rows: RESIZE_HINTS.to_vec(),
+                footer: "esc to finish",
+            }),
+        }
+    }
+}
+
+/// The direction a key resizes toward in [`Mode::Resize`], if it is one of `h`/`j`/`k`/`l`.
+pub fn resize_direction(keystroke: &Keystroke) -> Option<Direction> {
+    if keystroke.modifiers.modified() {
+        return None;
+    }
+    match keystroke.key.as_str() {
+        "h" => Some(Direction::Left),
+        "j" => Some(Direction::Down),
+        "k" => Some(Direction::Up),
+        "l" => Some(Direction::Right),
+        _ => None,
+    }
 }
 
 /// A command reached through the leader.
@@ -39,6 +99,7 @@ pub enum LeaderCommand {
     SplitRight,
     SplitDown,
     ClosePane,
+    Resize,
 }
 
 impl LeaderCommand {
@@ -48,6 +109,7 @@ impl LeaderCommand {
         ("s", "split right", LeaderCommand::SplitRight),
         ("v", "split down", LeaderCommand::SplitDown),
         ("x", "close pane", LeaderCommand::ClosePane),
+        ("r", "resize mode", LeaderCommand::Resize),
     ];
 
     /// The command for a keystroke pressed after the leader, if it is one.
@@ -61,6 +123,7 @@ impl LeaderCommand {
             ("s", false) => Some(Self::SplitRight),
             ("v", false) => Some(Self::SplitDown),
             ("x", false) => Some(Self::ClosePane),
+            ("r", false) => Some(Self::Resize),
             _ => None,
         }
     }

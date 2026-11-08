@@ -9,11 +9,16 @@ use gpui_kit::component::sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMe
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lodestar_core::geometry::{Rect, Size};
+use lodestar_core::geometry::{Point, Rect, Size};
 use lodestar_core::session::{Session, SessionStatus, SessionStore};
-use lodestar_core::window::{Direction, PaneId, Refused, WindowModel};
+use lodestar_core::window::{
+    Axis, Direction, DividerId, DividerLayout, PaneId, Refused, WindowModel,
+};
 
-use crate::leader::{CancelLeader, LEADER_FLAG, Leader, LeaderCommand, Mode, WINDOW_CONTEXT};
+use crate::leader::{
+    CancelLeader, Hints, LEADER_FLAG, Leader, LeaderCommand, Mode, RESIZE_FLAG, RESIZE_STEP,
+    WINDOW_CONTEXT, resize_direction,
+};
 
 const SIDEBAR_WIDTH: Pixels = px(255.);
 const PANE_HEADER_HEIGHT: Pixels = px(30.);
@@ -24,6 +29,8 @@ const UNFOCUSED_OPACITY: f32 = 0.6;
 const FLASH_DURATION: Duration = Duration::from_millis(150);
 /// Marks a sidebar row whose session is shown in a pane.
 const SHOWN_MARKER: &str = "\u{25A3}";
+/// How wide the grab band around a divider is, in logical pixels.
+const DIVIDER_GRAB_WIDTH: Pixels = px(7.);
 
 pub struct MainWindow {
     window_model: WindowModel,
@@ -32,6 +39,8 @@ pub struct MainWindow {
     mode: Mode,
     /// The pane whose last command was refused, while its flash lasts.
     flashing: Option<PaneId>,
+    /// The divider being dragged with the mouse, if any.
+    dragging: Option<DividerId>,
 }
 
 impl MainWindow {
@@ -42,6 +51,7 @@ impl MainWindow {
             focus_handle: cx.focus_handle(),
             mode: Mode::default(),
             flashing: None,
+            dragging: None,
         }
     }
 
@@ -61,8 +71,10 @@ impl MainWindow {
     fn key_context(&self) -> KeyContext {
         let mut context = KeyContext::default();
         context.add(WINDOW_CONTEXT);
-        if self.mode == Mode::Leader {
-            context.add(LEADER_FLAG);
+        match self.mode {
+            Mode::Normal => {}
+            Mode::Leader => context.add(LEADER_FLAG),
+            Mode::Resize => context.add(RESIZE_FLAG),
         }
         context
     }
@@ -77,15 +89,36 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// While the leader is pending, the next key is a command or ends the mode.
+    /// While the leader is pending, the next key is a command or ends the mode. In resize mode,
+    /// `h`/`j`/`k`/`l` keep resizing until `esc` (bound to [`CancelLeader`]).
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != Mode::Leader {
-            return;
+        match self.mode {
+            Mode::Normal => {}
+            Mode::Leader => {
+                cx.stop_propagation();
+                self.mode = Mode::Normal;
+                if let Some(command) = LeaderCommand::from_keystroke(&event.keystroke) {
+                    self.run(command, window, cx);
+                }
+                cx.notify();
+            }
+            Mode::Resize => {
+                cx.stop_propagation();
+                if let Some(direction) = resize_direction(&event.keystroke) {
+                    self.resize(direction, window, cx);
+                }
+            }
         }
-        cx.stop_propagation();
-        self.mode = Mode::Normal;
-        if let Some(command) = LeaderCommand::from_keystroke(&event.keystroke) {
-            self.run(command, window, cx);
+    }
+
+    /// One keyboard resize step toward `direction`; a refusal flashes the focused pane.
+    fn resize(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+        let area = Self::pane_area(window);
+        if let Err(refused) = self
+            .window_model
+            .resize_in_direction(direction, RESIZE_STEP, area)
+        {
+            self.flash(self.window_model.focused_pane(), refused, window, cx);
         }
         cx.notify();
     }
@@ -105,6 +138,10 @@ impl MainWindow {
                 .map(|_| ()),
             LeaderCommand::ClosePane => {
                 self.window_model.close(pane);
+                Ok(())
+            }
+            LeaderCommand::Resize => {
+                self.mode = Mode::Resize;
                 Ok(())
             }
         };
@@ -130,9 +167,9 @@ impl MainWindow {
         .detach();
     }
 
-    fn render_hint_popup(&self, cx: &App) -> impl IntoElement {
+    fn render_hint_popup(&self, hints: Hints, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
-        let rows = LeaderCommand::ALL.iter().map(|(key, label, _)| {
+        let rows = hints.rows.into_iter().map(|(key, label)| {
             h_flex()
                 .gap_2()
                 .child(
@@ -140,9 +177,9 @@ impl MainWindow {
                         .min_w(px(40.))
                         .font_family("monospace")
                         .text_color(rgb(ACCENT))
-                        .child(*key),
+                        .child(key),
                 )
-                .child(div().text_color(theme.foreground).child(*label))
+                .child(div().text_color(theme.foreground).child(label))
         });
         v_flex()
             .absolute()
@@ -160,14 +197,14 @@ impl MainWindow {
                 div()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child("ctrl+space, then"),
+                    .child(hints.title),
             )
             .children(rows)
             .child(
                 div()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child("esc to cancel"),
+                    .child(hints.footer),
             )
     }
 
@@ -237,9 +274,76 @@ impl MainWindow {
                     pane.rect,
                 )
             }))
-            .when(self.mode == Mode::Leader, |this| {
-                this.child(self.render_hint_popup(cx))
+            .children(
+                layout
+                    .dividers
+                    .iter()
+                    .map(|divider| self.render_divider_grab(divider, cx)),
+            )
+            .when_some(self.mode.hints(), |this, hints| {
+                this.child(self.render_hint_popup(hints, cx))
             })
+    }
+
+    /// The invisible band over a divider that the mouse grabs to drag it. It sits above the
+    /// panes so it can be a few pixels wider than the divider itself.
+    fn render_divider_grab(&self, divider: &DividerLayout, cx: &mut Context<Self>) -> Div {
+        let id = divider.id;
+        let grab = f32::from(DIVIDER_GRAB_WIDTH);
+        let rect = divider.rect;
+        let (band, element) = match divider.axis {
+            Axis::Horizontal => (
+                Rect::new(rect.x + (rect.width - grab) / 2., rect.y, grab, rect.height),
+                div().cursor_col_resize(),
+            ),
+            Axis::Vertical => (
+                Rect::new(rect.x, rect.y + (rect.height - grab) / 2., rect.width, grab),
+                div().cursor_row_resize(),
+            ),
+        };
+        place(element, band).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.dragging = Some(id);
+                cx.notify();
+            }),
+        )
+    }
+
+    /// A mouse move while a divider is being dragged: the divider follows the pointer.
+    fn on_drag_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(divider) = self.dragging else {
+            return;
+        };
+        if !event.dragging() {
+            self.dragging = None;
+            cx.notify();
+            return;
+        }
+        let position = Point::new(
+            f32::from(event.position.x - SIDEBAR_WIDTH),
+            f32::from(event.position.y),
+        );
+        let area = Self::pane_area(window);
+        if self
+            .window_model
+            .drag_divider(divider, position, area)
+            .is_err()
+        {
+            self.dragging = None;
+        }
+        cx.notify();
+    }
+
+    fn end_drag(&mut self, cx: &mut Context<Self>) {
+        if self.dragging.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn render_pane(&self, pane: PaneId, focused: bool, cx: &mut Context<Self>) -> Div {
@@ -331,6 +435,18 @@ impl Render for MainWindow {
             .on_action(cx.listener(Self::on_leader))
             .on_action(cx.listener(Self::on_cancel_leader))
             .on_key_down(cx.listener(Self::on_key_down))
+            // The root is always hovered, so it sees the whole drag, including outside the band.
+            .when_some(self.dragging, |this, _| {
+                this.on_mouse_move(cx.listener(Self::on_drag_move))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.end_drag(cx)),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.end_drag(cx)),
+                    )
+            })
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
