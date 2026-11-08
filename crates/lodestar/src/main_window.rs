@@ -11,6 +11,8 @@ use lodestar_core::geometry::{Rect, Size};
 use lodestar_core::session::{Session, SessionStatus, SessionStore};
 use lodestar_core::window::{PaneId, WindowModel};
 
+use crate::transcript_view::{self, Scroll, TranscriptViews};
+
 const SIDEBAR_WIDTH: Pixels = px(255.);
 const PANE_HEADER_HEIGHT: Pixels = px(30.);
 /// Lodestar's one accent colour: marks the focused pane.
@@ -22,14 +24,32 @@ const SHOWN_MARKER: &str = "\u{25A3}";
 pub struct MainWindow {
     window_model: WindowModel,
     sessions: SessionStore,
+    transcripts: TranscriptViews,
+    /// Keys go to the window unless a text input took them.
+    focus_handle: FocusHandle,
 }
 
 impl MainWindow {
-    pub fn new(sessions: SessionStore) -> Self {
+    pub fn new(sessions: SessionStore, cx: &mut Context<Self>) -> Self {
         Self {
             window_model: WindowModel::new(),
             sessions,
+            transcripts: TranscriptViews::default(),
+            focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Scroll the focused pane's Transcript, if it shows one.
+    pub fn scroll_transcript(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
+        self.transcripts
+            .scroll(self.window_model.focused_pane(), scroll);
+        cx.notify();
+    }
+
+    /// Expand or collapse the tool call at `ix` in `pane`.
+    pub fn toggle_tool_call(&mut self, pane: PaneId, ix: usize, cx: &mut Context<Self>) {
+        self.transcripts.toggle_tool_call(pane, ix);
+        cx.notify();
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -77,7 +97,7 @@ impl MainWindow {
             }))
     }
 
-    fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = window.viewport_size();
         let area = Size::new(
             f32::from(viewport.width - SIDEBAR_WIDTH).max(0.),
@@ -85,6 +105,18 @@ impl MainWindow {
         );
         let layout = self.window_model.layout(area);
         let focused = self.window_model.focused_pane();
+        self.transcripts
+            .retain(|pane| self.window_model.session_in(pane).is_some());
+        let panes: Vec<Div> = layout
+            .panes
+            .iter()
+            .map(|pane| {
+                place(
+                    self.render_pane(pane.pane, pane.pane == focused, window, cx),
+                    pane.rect,
+                )
+            })
+            .collect();
 
         div()
             .relative()
@@ -97,16 +129,18 @@ impl MainWindow {
                     .iter()
                     .map(|divider| place(div().bg(cx.theme().border), divider.rect)),
             )
-            .children(layout.panes.iter().map(|pane| {
-                place(
-                    self.render_pane(pane.pane, pane.pane == focused, cx),
-                    pane.rect,
-                )
-            }))
+            .children(panes)
     }
 
-    fn render_pane(&self, pane: PaneId, focused: bool, cx: &mut Context<Self>) -> Div {
+    fn render_pane(
+        &mut self,
+        pane: PaneId,
+        focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let theme = cx.theme();
+        let background = theme.background;
         let (border, header_bg, header_fg) = if focused {
             (rgb(ACCENT).into(), rgb(ACCENT).into(), gpui_kit::white())
         } else {
@@ -139,24 +173,19 @@ impl MainWindow {
             }
             None => header.child("Empty"),
         };
-        let body = v_flex()
-            .flex_1()
-            .overflow_hidden()
-            .p_2()
-            .gap_2()
-            .text_sm()
-            .children(session.into_iter().flat_map(|session| {
-                session
-                    .transcript
-                    .items()
-                    .iter()
-                    .map(|item| div().child(item.clone()))
-            }));
+        let body = match session {
+            Some(session) => self
+                .transcripts
+                .render(pane, session.id, &session.transcript, window, cx)
+                .into_any_element(),
+            None => div().flex_1().into_any_element(),
+        };
 
         v_flex()
+            .overflow_hidden()
             .border_1()
             .border_color(border)
-            .bg(theme.background)
+            .bg(background)
             .when(!focused, |this| this.opacity(UNFOCUSED_OPACITY))
             .on_mouse_down(
                 MouseButton::Left,
@@ -172,10 +201,15 @@ impl MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle, cx);
+        }
+        let root = h_flex()
             .size_full()
+            .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .text_color(cx.theme().foreground);
+        transcript_view::on_scroll_actions(root, cx)
             .child(self.render_sidebar(cx))
             .child(self.render_panes(window, cx))
     }

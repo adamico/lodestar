@@ -1,5 +1,9 @@
+// The `Action` derive emits `gpui::` paths; the kit is our GPUI.
+extern crate gpui_kit as gpui;
+
 mod fixtures;
 mod main_window;
+mod transcript_view;
 
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
@@ -12,6 +16,7 @@ fn main() {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
+        transcript_view::bind_keys(cx);
 
         let sessions = SessionStore::load(&mut FixtureSource);
         let options = WindowOptions {
@@ -19,8 +24,10 @@ fn main() {
             app_id: Some("lodestar".into()),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| MainWindow::new(sessions)))
-            .expect("failed to open the Lodestar window");
+        gpui_kit::open_window(options, cx, |_, cx| {
+            cx.new(|cx| MainWindow::new(sessions, cx))
+        })
+        .expect("failed to open the Lodestar window");
         cx.activate(true);
     });
 }
