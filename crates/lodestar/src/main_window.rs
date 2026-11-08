@@ -210,6 +210,15 @@ impl MainWindow {
         context
     }
 
+    /// Whether typed keys would reach `pane`'s picker, which is when its filter line draws a
+    /// caret: the pane is the focused one, the sidebar does not have the keyboard, and no
+    /// leader or resize mode is pending.
+    pub(crate) fn picker_takes_keys(&self, pane: PaneId) -> bool {
+        pane == self.window_model.focused_pane()
+            && !self.sidebar.is_focused()
+            && matches!(self.mode, Mode::Normal)
+    }
+
     /// Whether plain keys scroll the focused pane's Transcript: only when the pane shows a
     /// session and the sidebar does not have the keyboard.
     fn focused_pane_scrolls(&self) -> bool {

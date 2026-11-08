@@ -8,6 +8,9 @@ Spec #18, stories 5-7. Needs the `claude` CLI on PATH (or `LODESTAR_CLAUDE_BIN`)
 
 - [ ] Start a new session from an empty pane. Its status dot is waiting for input, the
       Transcript is empty, and nothing was sent to the Agent on its own.
+- [ ] An empty pane's "> Type to filter" line shows a caret before the placeholder only
+      while that pane is focused (not with the sidebar focused or a leader pending, and not
+      in other empty panes); typing moves the caret along after the typed filter.
 - [ ] Click the input box and type a message. Typed letters go to the box only: `j`/`k`
       do not move the sidebar, `g`/`G` and `ctrl+u`/`ctrl+d` do not scroll.
 - [ ] `shift+enter` inserts a newline; the box grows with the text (up to six rows).
