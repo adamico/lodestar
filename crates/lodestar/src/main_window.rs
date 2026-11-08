@@ -23,7 +23,9 @@ use crate::leader::{
 };
 use crate::sidebar_view::SidebarState;
 
-use crate::transcript_view::{self, Scroll, TRANSCRIPT_FLAG, TranscriptViews};
+use crate::transcript_view::{
+    self, InputFacts, SUGGESTION_FLAG, Scroll, TRANSCRIPT_FLAG, TranscriptViews,
+};
 
 const PANE_HEADER_HEIGHT: Pixels = px(30.);
 /// Lodestar's one accent colour: marks the focused pane.
@@ -130,6 +132,27 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// The prompt suggestion `tab` would accept: the focused pane's session's, while that
+    /// pane's input box is empty.
+    fn focused_suggestion(&self, cx: &App) -> Option<&str> {
+        let pane = self.window_model.focused_pane();
+        let session = self.window_model.session_in(pane)?;
+        if !self.transcripts.input_is_empty(pane, cx) {
+            return None;
+        }
+        self.sessions.suggestion(session)
+    }
+
+    /// Put the focused pane's prompt suggestion in its empty input box, to send or edit.
+    pub fn accept_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.focused_suggestion(cx).map(str::to_owned) else {
+            return;
+        };
+        let pane = self.window_model.focused_pane();
+        self.transcripts.accept_suggestion(pane, &text, window, cx);
+        cx.notify();
+    }
+
     /// The input box of `pane` took the keyboard: the pane is focused and the sidebar is not.
     pub fn input_focused(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         self.window_model.focus(pane);
@@ -169,7 +192,7 @@ impl MainWindow {
         )
     }
 
-    fn key_context(&self) -> KeyContext {
+    fn key_context(&self, cx: &App) -> KeyContext {
         let mut context = KeyContext::default();
         context.add(WINDOW_CONTEXT);
         match self.mode {
@@ -177,11 +200,23 @@ impl MainWindow {
                 if self.focused_pane_scrolls() {
                     context.add(TRANSCRIPT_FLAG);
                 }
+                if self.focused_suggestion(cx).is_some() {
+                    context.add(SUGGESTION_FLAG);
+                }
             }
             Mode::Leader => context.add(LEADER_FLAG),
             Mode::Resize => context.add(RESIZE_FLAG),
         }
         context
+    }
+
+    /// Whether typed keys would reach `pane`'s picker, which is when its filter line draws a
+    /// caret: the pane is the focused one, the sidebar does not have the keyboard, and no
+    /// leader or resize mode is pending.
+    pub(crate) fn picker_takes_keys(&self, pane: PaneId) -> bool {
+        pane == self.window_model.focused_pane()
+            && !self.sidebar.is_focused()
+            && matches!(self.mode, Mode::Normal)
     }
 
     /// Whether plain keys scroll the focused pane's Transcript: only when the pane shows a
@@ -527,9 +562,13 @@ impl MainWindow {
                 .render(
                     pane,
                     session,
-                    self.sessions.can_send(session.id),
-                    self.sessions
-                        .working_line(session.id, self.started.elapsed()),
+                    InputFacts {
+                        can_send: self.sessions.can_send(session.id),
+                        working: self
+                            .sessions
+                            .working_line(session.id, self.started.elapsed()),
+                        suggestion: self.sessions.suggestion(session.id),
+                    },
                     window,
                     cx,
                 )
@@ -561,7 +600,7 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.clear_stale_drop_target(cx);
         let root = h_flex()
-            .key_context(self.key_context())
+            .key_context(self.key_context(cx))
             .on_action(cx.listener(Self::on_leader))
             .on_action(cx.listener(Self::on_cancel_leader))
             .on_key_down(cx.listener(Self::on_key_down))

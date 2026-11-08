@@ -525,6 +525,7 @@ mod tests {
                     ..
                 } => format!("{} {output_tokens}", phase.label()),
                 SessionUpdate::Ended { .. } => "ended".into(),
+                SessionUpdate::Suggestion { text, .. } => format!("suggest {text}"),
             })
             .collect();
         assert_eq!(
@@ -543,6 +544,45 @@ mod tests {
                 "text",
                 "WaitingForInput",
             ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_is_asked_for_prompt_suggestions_and_its_suggestion_follows_the_turn() {
+        const PROMPT_SUGGESTION: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/stream-json/prompt-suggestion.jsonl"
+        );
+        let args = fake_dir("suggest").join("args");
+        let project = fake_claude_doing(
+            "suggest",
+            &format!(
+                "printf '%s\\n' \"$@\" > '{}'\ncat '{PROMPT_SUGGESTION}'\ncat > /dev/null\n",
+                args.display()
+            ),
+        );
+        let mut source = fake_source();
+
+        source.start_agent(SessionId(3), &project).unwrap();
+        let updates = poll_until(&mut source, |all| {
+            all.iter()
+                .any(|update| matches!(update, SessionUpdate::Suggestion { .. }))
+        });
+
+        let args = fs::read_to_string(&args).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--prompt-suggestions", "true"]),
+            "{args:?}"
+        );
+        assert_eq!(
+            updates.last(),
+            Some(&SessionUpdate::Suggestion {
+                session: SessionId(3),
+                text: "run cargo test".into()
+            })
         );
     }
 }

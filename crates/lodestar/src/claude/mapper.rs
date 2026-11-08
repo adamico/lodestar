@@ -4,8 +4,9 @@
 //! carries what the Agent said and the tools it called, `user` carries those tools' results
 //! (a refused tool's result is an error that says so, so `system`/`permission_denied`, which
 //! repeats it, is ignored), and `result` closes the turn, with an Error item when the turn
-//! failed. Partial messages (`stream_event`, and `system`/`status` while requesting) only move
-//! the working indicator, through a [`TurnTally`]; whole items still come from `assistant`.
+//! failed. A `prompt_suggestion` may follow, with a guess at the user's next message.
+//! Partial messages (`stream_event`, and `system`/`status` while requesting) only move the
+//! working indicator, through a [`TurnTally`]; whole items still come from `assistant`.
 //! Everything else (progress blurbs, rate-limit notes, lines that are not JSON) is ignored
 //! without complaint, because Claude Code adds event kinds freely and a stray line must never
 //! take the session down.
@@ -31,6 +32,9 @@ pub enum Event {
     Result { error: Option<String> },
     /// A partial message: how far the API message being written has got.
     Partial(Partial),
+    /// The Agent's guess at the user's next message, sent after a turn's `result` when it
+    /// runs with `--prompt-suggestions`.
+    Suggestion(String),
     /// A line Lodestar does not react to.
     Ignored,
 }
@@ -113,6 +117,10 @@ pub fn parse_line(line: &str) -> Event {
         Some("system") if value["subtype"] == "status" && value["status"] == "requesting" => {
             Event::Partial(Partial::Requesting)
         }
+        Some("prompt_suggestion") => match value["suggestion"].as_str().map(str::trim) {
+            Some(text) if !text.is_empty() => Event::Suggestion(text.to_owned()),
+            _ => Event::Ignored,
+        },
         Some("stream_event") if value["parent_tool_use_id"].is_null() => {
             partial(&value["event"]).map_or(Event::Ignored, Event::Partial)
         }
@@ -338,6 +346,10 @@ pub fn updates_for(session: SessionId, event: &Event) -> Vec<SessionUpdate> {
                 status: SessionStatus::WaitingForInput,
             }])
             .collect(),
+        Event::Suggestion(text) => vec![SessionUpdate::Suggestion {
+            session,
+            text: text.clone(),
+        }],
         Event::Partial(_) | Event::Ignored => Vec::new(),
     }
 }
@@ -368,6 +380,11 @@ mod tests {
     /// 391 is prime, run `echo hi` and answer: one API message that thinks then calls Bash
     /// (113 output tokens), then one that writes the answer (24).
     const THINKING_TOOL: &str = include_str!("../../fixtures/stream-json/thinking-tool.jsonl");
+    /// Haiku with `--prompt-suggestions true`, over two turns: asked what is wrong with an
+    /// `add` that subtracts (no suggestion follows), then to show the fixed line, after
+    /// which Claude Code suggests "run cargo test".
+    const PROMPT_SUGGESTION: &str =
+        include_str!("../../fixtures/stream-json/prompt-suggestion.jsonl");
 
     fn mapped(recording: &str) -> Vec<SessionUpdate> {
         recording
@@ -609,6 +626,43 @@ mod tests {
                 assistant("pong pong."),
                 status(SessionStatus::WaitingForInput),
             ]
+        );
+    }
+
+    #[test]
+    fn a_prompt_suggestion_after_a_turn_becomes_the_sessions_suggestion() {
+        let updates = mapped(PROMPT_SUGGESTION);
+
+        assert_eq!(
+            updates
+                .iter()
+                .filter(|update| !matches!(update, SessionUpdate::TranscriptItem { .. }))
+                .collect::<Vec<_>>(),
+            [
+                &status(SessionStatus::Running),
+                &status(SessionStatus::WaitingForInput),
+                &status(SessionStatus::Running),
+                &status(SessionStatus::WaitingForInput),
+                &SessionUpdate::Suggestion {
+                    session: SessionId(7),
+                    text: "run cargo test".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_blank_or_missing_suggestion_is_ignored() {
+        assert_eq!(
+            map_line(
+                SessionId(7),
+                r#"{"type":"prompt_suggestion","suggestion":"  "}"#
+            ),
+            []
+        );
+        assert_eq!(
+            map_line(SessionId(7), r#"{"type":"prompt_suggestion"}"#),
+            []
         );
     }
 
