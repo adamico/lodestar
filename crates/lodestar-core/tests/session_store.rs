@@ -186,3 +186,50 @@ mod recent_folders {
         assert_eq!(store.projects().len(), 2);
     }
 }
+
+mod picker {
+    use std::path::PathBuf;
+
+    use super::new_sessions::Fixtures;
+    use lodestar_core::picker::{PickerEntry, PickerList};
+    use lodestar_core::session::{ProjectId, SessionId, SessionStore};
+    use lodestar_core::window::WindowModel;
+
+    #[test]
+    fn the_pickers_open_list_is_the_unshown_sessions_newest_first() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let mut model = WindowModel::new();
+        let created = store.create_session(ProjectId(1));
+        model.open_session(SessionId(0), model.focused_pane());
+
+        let list = PickerList::new(&store, &model, "");
+
+        let all: Vec<SessionId> = store
+            .sessions_newest_first()
+            .iter()
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(list.sessions(), model.not_shown(&all));
+        assert_eq!(list.sessions(), vec![created, SessionId(1)]);
+    }
+
+    #[test]
+    fn the_picker_offers_recent_folders_then_browse() {
+        let store = SessionStore::load(&mut Fixtures);
+        let model = WindowModel::new();
+
+        let list = PickerList::new(&store, &model, "");
+
+        assert_eq!(list.folders(), store.recent_folders());
+        assert_eq!(
+            list.entries(),
+            vec![
+                PickerEntry::Session(SessionId(0)),
+                PickerEntry::Session(SessionId(1)),
+                PickerEntry::Folder(PathBuf::from("/home/me/code/lodestar")),
+                PickerEntry::Folder(PathBuf::from("/home/me/dotfiles")),
+                PickerEntry::Browse,
+            ]
+        );
+    }
+}
