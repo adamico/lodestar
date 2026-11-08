@@ -354,6 +354,34 @@ impl WindowModel {
     }
 }
 
+/// Swapping panes.
+impl WindowModel {
+    /// Exchange the places of panes `a` and `b` in the layout. Each keeps its id and the session
+    /// it shows, so the sessions trade places on screen, and focus follows the focused pane.
+    /// Does nothing if either pane no longer exists.
+    pub fn swap(&mut self, a: PaneId, b: PaneId) {
+        if a == b || !self.panes.contains_key(&a) || !self.panes.contains_key(&b) {
+            return;
+        }
+        self.root.swap_leaves(a, b);
+    }
+}
+
+impl Node {
+    /// Relabel the leaf `a` as `b` and the leaf `b` as `a`.
+    fn swap_leaves(&mut self, a: PaneId, b: PaneId) {
+        match self {
+            Node::Pane(id) if *id == a => *id = b,
+            Node::Pane(id) if *id == b => *id = a,
+            Node::Pane(_) => {}
+            Node::Split { first, second, .. } => {
+                first.swap_leaves(a, b);
+                second.swap_leaves(a, b);
+            }
+        }
+    }
+}
+
 /// Whether `at` lies inside the interval `(start, length)`.
 fn within((start, length): (f32, f32), at: f32) -> bool {
     at >= start && at < start + length

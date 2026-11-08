@@ -560,3 +560,64 @@ mod focus_across_uneven_layouts {
         assert_eq!(model.focused_pane(), a2);
     }
 }
+
+/// Left pane full height; right column split top/bottom. Sessions 1, 2, 3 sit in them in that
+/// order, so rects can be checked by session after a swap.
+mod swap {
+    use lodestar_core::geometry::{Rect, Size};
+    use lodestar_core::session::SessionId;
+    use lodestar_core::window::{Direction, PaneId, WindowModel};
+
+    const AREA: Size = Size::new(1601.0, 600.0);
+    const LEFT: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+    const TOP_RIGHT: Rect = Rect::new(801.0, 0.0, 800.0, 299.5);
+    const BOTTOM_RIGHT: Rect = Rect::new(801.0, 300.5, 800.0, 299.5);
+
+    fn uneven(model: &mut WindowModel) -> (PaneId, PaneId, PaneId) {
+        let layout = model.layout(AREA);
+        let (left, top_right) = (layout.panes[0].pane, layout.panes[1].pane);
+        let bottom_right = model
+            .split(top_right, Direction::Down, AREA)
+            .expect("fits");
+        model.open_session(SessionId(1), left);
+        model.open_session(SessionId(2), top_right);
+        model.open_session(SessionId(3), bottom_right);
+        (left, top_right, bottom_right)
+    }
+
+    fn rect_of_session(model: &WindowModel, session: SessionId) -> Rect {
+        let pane = model.pane_showing(session).expect("shown");
+        model
+            .layout(AREA)
+            .panes
+            .iter()
+            .find(|p| p.pane == pane)
+            .expect("laid out")
+            .rect
+    }
+
+    #[test]
+    fn swap_two_panes_and_their_sessions_trade_places_on_screen() {
+        let mut model = WindowModel::new();
+        let (left, _, bottom_right) = uneven(&mut model);
+
+        model.swap(left, bottom_right);
+
+        assert_eq!(rect_of_session(&model, SessionId(1)), BOTTOM_RIGHT);
+        assert_eq!(rect_of_session(&model, SessionId(3)), LEFT);
+        assert_eq!(rect_of_session(&model, SessionId(2)), TOP_RIGHT);
+        assert_eq!(model.session_in(left), Some(SessionId(1)));
+    }
+
+    #[test]
+    fn swap_follows_the_focused_pane_to_its_new_place() {
+        let mut model = WindowModel::new();
+        let (left, top_right, _) = uneven(&mut model);
+        model.focus(top_right);
+
+        model.swap(left, top_right);
+
+        assert_eq!(model.focused_pane(), top_right);
+        assert_eq!(rect_of_session(&model, SessionId(2)), LEFT);
+    }
+}
