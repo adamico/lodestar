@@ -1,6 +1,6 @@
 //! Sessions, the Projects they work in, and the seam they arrive through.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Identifies a session for as long as the app runs.
@@ -17,6 +17,16 @@ pub struct Project {
     pub id: ProjectId,
     pub name: String,
     pub path: PathBuf,
+}
+
+impl Project {
+    /// The name a project at `path` goes by: its folder's name, or the whole path when it has
+    /// no final component (such as `/`).
+    pub fn name_for(path: &Path) -> String {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    }
 }
 
 /// Where a session stands right now.
@@ -188,10 +198,7 @@ impl SessionStore {
                 .max()
                 .unwrap_or(0),
         );
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let name = Project::name_for(&path);
         self.projects.push(Project { id, name, path });
         id
     }

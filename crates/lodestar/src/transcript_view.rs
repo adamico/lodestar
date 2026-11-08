@@ -18,7 +18,7 @@ use gpui_kit::*;
 use lodestar_core::session::{SessionId, Transcript, TranscriptItem};
 use lodestar_core::window::PaneId;
 
-use crate::main_window::MainWindow;
+use crate::main_window::{MainWindow, pane_element_id};
 
 /// Rows GPUI lays out beyond the visible part of the list, so scrolling stays smooth.
 const LIST_OVERDRAW: Pixels = px(400.);
@@ -165,7 +165,7 @@ impl TranscriptViews {
             .text_sm()
             .child(
                 div()
-                    .id(pane_element_id(pane, "transcript"))
+                    .id(pane_element_id("transcript", pane))
                     .relative()
                     .flex_1()
                     .min_h_0()
@@ -176,7 +176,7 @@ impl TranscriptViews {
             )
             .child(
                 div()
-                    .id(pane_element_id(pane, "input"))
+                    .id(pane_element_id("input", pane))
                     .flex_shrink_0()
                     .p_2()
                     .border_t_1()
@@ -284,10 +284,6 @@ impl TranscriptViews {
     }
 }
 
-fn pane_element_id(pane: PaneId, what: &str) -> ElementId {
-    ElementId::Name(format!("{what}-{pane:?}").into())
-}
-
 fn item_element_id(pane: PaneId, ix: usize, what: &str) -> ElementId {
     ElementId::NamedInteger(format!("{what}-{pane:?}").into(), ix as u64)
 }
@@ -304,7 +300,7 @@ fn render_jump_to_latest(pane: PaneId, cx: &mut Context<MainWindow>) -> impl Int
         .justify_center()
         .child(
             div()
-                .id(pane_element_id(pane, "jump-to-latest"))
+                .id(pane_element_id("jump-to-latest", pane))
                 .px_3()
                 .py_1()
                 .rounded_full()

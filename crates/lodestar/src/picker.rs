@@ -10,6 +10,7 @@ use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lodestar_core::picker::{PickerEntry, PickerList, PickerState};
+use lodestar_core::session::Project;
 use lodestar_core::window::PaneId;
 
 use crate::main_window::{MainWindow, pane_element_id, status_color, status_dot};
@@ -110,7 +111,7 @@ impl MainWindow {
                 }
                 None => row,
             },
-            PickerEntry::Folder(path) => row.child(folder_name(path)).child(
+            PickerEntry::Folder(path) => row.child(Project::name_for(path)).child(
                 div()
                     .text_xs()
                     .text_color(theme.muted_foreground)
@@ -212,12 +213,6 @@ fn typed_char(keystroke: &Keystroke) -> Option<char> {
         (Some(c), None) if !c.is_control() => Some(c),
         _ => None,
     }
-}
-
-fn folder_name(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 fn section_label(label: &'static str, cx: &App) -> Div {
