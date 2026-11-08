@@ -1182,7 +1182,7 @@ mod drop_session {
     }
 
     #[test]
-    fn drop_a_session_on_the_pane_it_already_occupies_changes_nothing() {
+    fn drop_a_session_on_the_middle_of_the_pane_it_already_occupies_changes_nothing() {
         let mut model = WindowModel::new();
         let layout = model.layout(AREA);
         let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
@@ -1193,13 +1193,34 @@ mod drop_session {
         model
             .drop_session(SessionId(1), left, DropZone::Middle, AREA)
             .unwrap();
-        model
-            .drop_session(SessionId(1), left, DropZone::Edge(Direction::Right), AREA)
-            .unwrap();
 
         assert_eq!(rects(&model, AREA), before);
         assert_eq!(model.session_in(left), Some(SessionId(1)));
         assert_eq!(model.focused_pane(), right);
+    }
+
+    #[test]
+    fn drop_a_session_on_an_edge_of_its_own_pane_splits_it_and_moves_the_session_to_the_new_half()
+     {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+        model.open_session(SessionId(1), left);
+        model.focus(right);
+
+        model
+            .drop_session(SessionId(1), left, DropZone::Edge(Direction::Down), AREA)
+            .unwrap();
+
+        assert_eq!(model.session_in(left), None, "the old pane is left empty");
+        assert_eq!(
+            rect_of_session(&model, SessionId(1)),
+            Rect::new(0.0, 300.5, 800.0, 299.5),
+            "the session is in the new bottom half"
+        );
+        assert_eq!(rect_of(&model, left), Rect::new(0.0, 0.0, 800.0, 299.5));
+        assert_eq!(model.focused_pane(), model.pane_showing(SessionId(1)).unwrap());
+        assert_eq!(model.layout(AREA).panes.len(), 3);
     }
 
     #[test]
