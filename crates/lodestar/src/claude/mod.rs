@@ -73,7 +73,11 @@ impl SessionSource for ClaudeSource {
         let mut sessions: Vec<SessionId> = self.agents.keys().copied().collect();
         sessions.sort();
         for session in sessions {
-            let events = self.agents.get_mut(&session).map(Agent::drain).unwrap_or_default();
+            let events = self
+                .agents
+                .get_mut(&session)
+                .map(Agent::drain)
+                .unwrap_or_default();
             for event in events {
                 updates.extend(self.updates_from(session, event));
             }
@@ -120,8 +124,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use lodestar_core::session::{
-        Project, ProjectId, SessionId, SessionSource, SessionStatus, SessionUpdate,
-        TranscriptItem,
+        Project, ProjectId, SessionId, SessionSource, SessionStatus, SessionUpdate, TranscriptItem,
     };
 
     use super::*;
@@ -132,10 +135,16 @@ mod tests {
     fn fake_claude(name: &str) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let dir = std::env::temp_dir().join(format!("lodestar-fake-claude-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "lodestar-fake-claude-{name}-{}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).unwrap();
         let record = dir.join("stdin-first-line");
-        let recording = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/stream-json/text-only.jsonl");
+        let recording = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/stream-json/text-only.jsonl"
+        );
         let script = dir.join("claude");
         fs::write(
             &script,
@@ -238,6 +247,10 @@ mod tests {
 
         let started = source.start_agent(SessionId(3), &project);
 
-        assert!(started.unwrap_err().contains("lodestar-no-such-claude-binary"));
+        assert!(
+            started
+                .unwrap_err()
+                .contains("lodestar-no-such-claude-binary")
+        );
     }
 }
