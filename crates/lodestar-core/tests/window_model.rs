@@ -576,9 +576,7 @@ mod swap {
     fn uneven(model: &mut WindowModel) -> (PaneId, PaneId, PaneId) {
         let layout = model.layout(AREA);
         let (left, top_right) = (layout.panes[0].pane, layout.panes[1].pane);
-        let bottom_right = model
-            .split(top_right, Direction::Down, AREA)
-            .expect("fits");
+        let bottom_right = model.split(top_right, Direction::Down, AREA).expect("fits");
         model.open_session(SessionId(1), left);
         model.open_session(SessionId(2), top_right);
         model.open_session(SessionId(3), bottom_right);
@@ -675,7 +673,10 @@ mod swap {
         assert!(model.swap_in_direction(Direction::Left, AREA));
 
         assert_eq!(model.focused_pane(), right);
-        assert_eq!(rect_of_session(&model, SessionId(1)), Rect::new(801.0, 0.0, 800.0, 600.0));
+        assert_eq!(
+            rect_of_session(&model, SessionId(1)),
+            Rect::new(801.0, 0.0, 800.0, 600.0)
+        );
         let layout = model.layout(AREA);
         assert_eq!(layout.panes[0].pane, right);
         assert_eq!(model.session_in(right), None);

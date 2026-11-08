@@ -5,6 +5,7 @@
 //! [`LeaderCommand::ALL`] for the hint popup, and one arm where the window runs the command.
 
 use gpui_kit::*;
+use lodestar_core::window::Direction;
 
 gpui_kit::actions!(lodestar, [Leader, CancelLeader]);
 
@@ -39,6 +40,10 @@ pub enum LeaderCommand {
     SplitRight,
     SplitDown,
     ClosePane,
+    /// Leader + `h`/`j`/`k`/`l`.
+    Focus(Direction),
+    /// Leader + `H`/`J`/`K`/`L`.
+    Swap(Direction),
 }
 
 impl LeaderCommand {
@@ -48,6 +53,14 @@ impl LeaderCommand {
         ("s", "split right", LeaderCommand::SplitRight),
         ("v", "split down", LeaderCommand::SplitDown),
         ("x", "close pane", LeaderCommand::ClosePane),
+        ("h", "focus left", LeaderCommand::Focus(Direction::Left)),
+        ("j", "focus down", LeaderCommand::Focus(Direction::Down)),
+        ("k", "focus up", LeaderCommand::Focus(Direction::Up)),
+        ("l", "focus right", LeaderCommand::Focus(Direction::Right)),
+        ("H", "swap left", LeaderCommand::Swap(Direction::Left)),
+        ("J", "swap down", LeaderCommand::Swap(Direction::Down)),
+        ("K", "swap up", LeaderCommand::Swap(Direction::Up)),
+        ("L", "swap right", LeaderCommand::Swap(Direction::Right)),
     ];
 
     /// The command for a keystroke pressed after the leader, if it is one.
@@ -61,6 +74,14 @@ impl LeaderCommand {
             ("s", false) => Some(Self::SplitRight),
             ("v", false) => Some(Self::SplitDown),
             ("x", false) => Some(Self::ClosePane),
+            ("h", false) => Some(Self::Focus(Direction::Left)),
+            ("j", false) => Some(Self::Focus(Direction::Down)),
+            ("k", false) => Some(Self::Focus(Direction::Up)),
+            ("l", false) => Some(Self::Focus(Direction::Right)),
+            ("h", true) => Some(Self::Swap(Direction::Left)),
+            ("j", true) => Some(Self::Swap(Direction::Down)),
+            ("k", true) => Some(Self::Swap(Direction::Up)),
+            ("l", true) => Some(Self::Swap(Direction::Right)),
             _ => None,
         }
     }

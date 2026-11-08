@@ -107,6 +107,14 @@ impl MainWindow {
                 self.window_model.close(pane);
                 Ok(())
             }
+            LeaderCommand::Focus(direction) => {
+                self.window_model.focus_in_direction(direction, area);
+                Ok(())
+            }
+            LeaderCommand::Swap(direction) => {
+                self.window_model.swap_in_direction(direction, area);
+                Ok(())
+            }
         };
         if let Err(refused) = result {
             self.flash(pane, refused, window, cx);
