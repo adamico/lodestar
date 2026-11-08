@@ -240,6 +240,22 @@ fn close_an_unfocused_pane_and_focus_stays_put() {
 }
 
 #[test]
+fn close_the_focused_nested_pane_and_focus_moves_to_the_sibling_that_took_its_space() {
+    let mut model = WindowModel::new();
+    let layout = model.layout(WIDE_AREA);
+    let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+    let bottom_right = model
+        .split(right, Direction::Down, WIDE_AREA)
+        .expect("fits");
+    model.focus(bottom_right);
+
+    model.close(bottom_right);
+
+    assert_eq!(model.focused_pane(), right, "not the far-away left pane");
+    assert_ne!(model.focused_pane(), left);
+}
+
+#[test]
 fn close_a_nested_pane_and_only_its_sibling_grows() {
     let mut model = WindowModel::new();
     let layout = model.layout(WIDE_AREA);

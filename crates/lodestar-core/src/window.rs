@@ -343,9 +343,9 @@ impl WindowModel {
             self.focused = fresh;
             return;
         }
-        self.root.remove_leaf(pane);
+        let heir = self.root.remove_leaf(pane);
         if self.focused == pane {
-            self.focused = self.root.first_pane();
+            self.focused = heir.unwrap_or_else(|| self.root.first_pane());
         }
     }
 
@@ -784,20 +784,23 @@ impl Node {
 }
 
 impl Node {
-    /// Remove the leaf `pane`, its sibling taking the parent's place. Does nothing when `pane` is
-    /// the root or absent.
-    fn remove_leaf(&mut self, pane: PaneId) {
+    /// Remove the leaf `pane`, its sibling taking the parent's place. Returns the first pane
+    /// of that sibling, the one that took `pane`'s space; `None` when `pane` is the root or
+    /// absent, in which case nothing changes.
+    fn remove_leaf(&mut self, pane: PaneId) -> Option<PaneId> {
         let Node::Split { first, second, .. } = self else {
-            return;
+            return None;
         };
         if matches!(**first, Node::Pane(id) if id == pane) {
             *self = std::mem::replace(second, Node::Pane(pane));
         } else if matches!(**second, Node::Pane(id) if id == pane) {
             *self = std::mem::replace(first, Node::Pane(pane));
         } else {
-            first.remove_leaf(pane);
-            second.remove_leaf(pane);
+            return first
+                .remove_leaf(pane)
+                .or_else(|| second.remove_leaf(pane));
         }
+        Some(self.first_pane())
     }
 
     /// The leftmost, topmost pane under this node.
