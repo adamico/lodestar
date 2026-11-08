@@ -201,8 +201,10 @@ impl MainWindow {
                 self.source.send_message(session, FIRST_MESSAGE);
             }
             Err(message) => {
-                // The error-handling slice puts `message` in the Transcript.
-                eprintln!("lodestar: {message}");
+                self.sessions.apply(SessionUpdate::TranscriptItem {
+                    session,
+                    item: TranscriptItem::Error(message),
+                });
                 self.sessions.apply(SessionUpdate::Status {
                     session,
                     status: SessionStatus::Done,

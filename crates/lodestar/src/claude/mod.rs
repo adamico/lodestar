@@ -131,9 +131,13 @@ impl SessionSource for ClaudeSource {
             ));
         }
         let agent = Agent::spawn(&self.program, &project.path, session).map_err(|error| {
+            let reason = match error.kind() {
+                std::io::ErrorKind::NotFound => "not found on PATH".to_owned(),
+                _ => error.to_string(),
+            };
             format!(
-                "Could not start {}: {error}. Install Claude Code or set {CLAUDE_BIN_VAR}.",
-                self.program.to_string_lossy()
+                "Couldn't start {}: {reason}. Install Claude Code or set {CLAUDE_BIN_VAR}.",
+                self.program_name()
             )
         })?;
         self.agents.insert(session, agent);
@@ -149,8 +153,12 @@ impl SessionSource for ClaudeSource {
                 session,
                 status: SessionStatus::Running,
             }),
-            // The Agent is gone; the error-handling slice turns this into a Transcript item.
-            Err(error) => eprintln!("lodestar: session {}: send failed: {error}", session.0),
+            // The Agent is gone, or going: its exit is reported on the next poll if it has not
+            // been already; until then, say what happened to the message.
+            Err(error) => self.pending.push(SessionUpdate::TranscriptItem {
+                session,
+                item: TranscriptItem::Error(format!("Couldn't send the message: {error}.")),
+            }),
         }
     }
 }
@@ -392,10 +400,10 @@ mod tests {
 
         let started = source.start_agent(SessionId(3), &tmp_project());
 
-        assert!(
-            started
-                .unwrap_err()
-                .contains("lodestar-no-such-claude-binary")
+        assert_eq!(
+            started.unwrap_err(),
+            "Couldn't start lodestar-no-such-claude-binary: not found on PATH. \
+             Install Claude Code or set LODESTAR_CLAUDE_BIN."
         );
     }
 }
