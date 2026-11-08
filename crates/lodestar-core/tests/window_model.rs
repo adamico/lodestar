@@ -435,3 +435,35 @@ mod open_session {
         }
     }
 }
+
+mod resize {
+    use lodestar_core::geometry::{Rect, Size};
+    use lodestar_core::window::{DIVIDER_THICKNESS, WindowModel};
+
+    /// Two launch panes of 500×600 each.
+    const AREA: Size = Size::new(1001.0, 600.0);
+
+    fn rects(model: &WindowModel) -> Vec<Rect> {
+        model.layout(AREA).panes.iter().map(|p| p.rect).collect()
+    }
+
+    #[test]
+    fn set_a_divider_ratio_and_the_panes_on_both_sides_follow_it() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        model.set_ratio(divider, 0.4, AREA).expect("both sides fit");
+
+        assert_eq!(
+            rects(&model),
+            vec![
+                Rect::new(0.0, 0.0, 400.0, 600.0),
+                Rect::new(401.0, 0.0, 600.0, 600.0),
+            ]
+        );
+        assert_eq!(
+            model.layout(AREA).dividers[0].rect,
+            Rect::new(400.0, 0.0, DIVIDER_THICKNESS, 600.0)
+        );
+    }
+}
