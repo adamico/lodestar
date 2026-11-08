@@ -9,4 +9,4 @@ Headless Claude Code (`claude -p`) cannot show its approval prompts, so any tool
 
 ## Consequences
 
-File reads and edits are auto-approved. Bash still needs approval and is denied in M2, which is acceptable for a first slice: the Agent can read and change code but not run it. The follow-up to replace the fixed mode with prompts in the pane is tracked in a separate issue under #18.
+File reads and edits are auto-approved. Bash still needs approval and is denied in M2, which is acceptable for a first slice: the Agent can read and change code but not run it. The follow-up to replace the fixed mode with prompts in the pane is tracked in #26.
