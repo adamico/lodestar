@@ -2,7 +2,7 @@
 //!
 //! Every line is one JSON object with a `type`. `system`/`init` opens a turn, `assistant`
 //! carries what the Agent said and the tools it called, `user` carries those tools' results,
-//! `system`/`permission_denied` says a tool was refused, and `result` closes the turn.
+//! `system`/`permission_denied` says a tool was refused, and `result` closes the turn (with an Error item when the turn failed).
 //! Everything else (progress blurbs, rate-limit notes, partial messages, lines that are not
 //! JSON) is ignored without complaint, because Claude Code adds event kinds freely and a
 //! stray line must never take the session down.
@@ -22,8 +22,9 @@ pub enum Event {
     Assistant(Vec<AssistantBlock>),
     /// Results for tool calls, one per `tool_result` block, each with the call's id.
     ToolResults(Vec<(String, String)>),
-    /// The turn ended. `is_error` is for a later slice; the Agent is alive either way.
-    Result { is_error: bool },
+    /// The turn ended, with why it failed when it did. The Agent is alive either way and can
+    /// take another message.
+    Result { error: Option<String> },
     /// A line Lodestar does not react to.
     Ignored,
 }
@@ -94,10 +95,35 @@ pub fn parse_line(line: &str) -> Event {
             Event::ToolResults(results)
         }
         Some("result") => Event::Result {
-            is_error: value["is_error"].as_bool().unwrap_or(false),
+            error: turn_error(&value),
         },
         _ => Event::Ignored,
     }
+}
+
+/// Why a `result` line with `is_error` says its turn failed: its subtype, then whatever text
+/// it carries (`result`, or the `errors` list). `None` for a turn that succeeded.
+fn turn_error(result: &Value) -> Option<String> {
+    if !result["is_error"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    let subtype = result["subtype"].as_str().unwrap_or("error");
+    let mut message = format!("The turn failed ({subtype}).");
+    let text = match &result["result"] {
+        Value::String(text) if !text.trim().is_empty() => text.trim().to_owned(),
+        _ => result["errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    if !text.is_empty() {
+        message.push('\n');
+        message.push_str(&text);
+    }
+    Some(message)
 }
 
 fn content_blocks(line: &Value) -> impl Iterator<Item = &Value> {
@@ -205,10 +231,17 @@ pub fn updates_for(session: SessionId, event: &Event) -> Vec<SessionUpdate> {
                 output: output.clone(),
             })
             .collect(),
-        Event::Result { .. } => vec![SessionUpdate::Status {
-            session,
-            status: SessionStatus::WaitingForInput,
-        }],
+        Event::Result { error } => error
+            .iter()
+            .map(|error| SessionUpdate::TranscriptItem {
+                session,
+                item: TranscriptItem::Error(error.clone()),
+            })
+            .chain([SessionUpdate::Status {
+                session,
+                status: SessionStatus::WaitingForInput,
+            }])
+            .collect(),
         Event::Ignored => Vec::new(),
     }
 }
@@ -393,6 +426,41 @@ mod tests {
                 if text.contains("denied")
         ));
         assert_eq!(updates[5], status(SessionStatus::WaitingForInput));
+    }
+
+    fn error(text: &str) -> SessionUpdate {
+        SessionUpdate::TranscriptItem {
+            session: SessionId(7),
+            item: TranscriptItem::Error(text.into()),
+        }
+    }
+
+    #[test]
+    fn a_failed_turn_says_why_and_waits_for_input_again() {
+        let line = r#"{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":3,"session_id":"s"}"#;
+
+        assert_eq!(
+            map_line(SessionId(7), line),
+            [
+                error("The turn failed (error_max_turns)."),
+                status(SessionStatus::WaitingForInput),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_turn_shows_the_error_text_it_carries() {
+        let with_result = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 529 overloaded"}"#;
+        let with_errors = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["first","second"]}"#;
+
+        assert_eq!(
+            map_line(SessionId(7), with_result)[0],
+            error("The turn failed (error_during_execution).\nAPI Error: 529 overloaded")
+        );
+        assert_eq!(
+            map_line(SessionId(7), with_errors)[0],
+            error("The turn failed (error_during_execution).\nfirst\nsecond")
+        );
     }
 
     #[test]

@@ -89,8 +89,9 @@ pub enum TranscriptItem {
     /// A message from the Agent, as markdown.
     Assistant(String),
     ToolCall(ToolCall),
-    /// Why the session stopped short, in words for the user: the Agent exited, was killed or
-    /// could not start. Always the last item, since nothing happens after it.
+    /// Why a turn failed or the session ended, in words for the user. A failed turn leaves
+    /// the Agent waiting for input; when the Agent exited, was killed or could not start, it
+    /// is the last item, since nothing happens after it.
     Error(String),
 }
 
