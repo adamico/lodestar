@@ -703,4 +703,40 @@ mod drop_session {
         assert_eq!(model.session_in(right), Some(SessionId(1)));
         assert_eq!(rects(&model, AREA).len(), 2);
     }
+
+    #[test]
+    fn drop_on_the_middle_displaces_the_session_shown_there_so_it_is_not_shown() {
+        let mut model = WindowModel::new();
+        let right = model.layout(AREA).panes[1].pane;
+        model.open_session(SessionId(1), right);
+
+        model
+            .drop_session(SessionId(2), right, DropZone::Middle, AREA)
+            .unwrap();
+
+        assert_eq!(model.session_in(right), Some(SessionId(2)));
+        assert_eq!(
+            model.not_shown(&[SessionId(1), SessionId(2)]),
+            vec![SessionId(1)]
+        );
+        assert_eq!(model.sessions_shown(), vec![SessionId(2)]);
+    }
+
+    #[test]
+    fn drop_a_shown_session_on_another_pane_moves_it_and_leaves_its_old_pane_empty() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+        model.open_session(SessionId(1), left);
+        model.open_session(SessionId(2), right);
+
+        model
+            .drop_session(SessionId(1), right, DropZone::Middle, AREA)
+            .unwrap();
+
+        assert_eq!(model.session_in(left), None);
+        assert_eq!(model.session_in(right), Some(SessionId(1)));
+        assert_eq!(model.sessions_shown(), vec![SessionId(1)]);
+        assert_eq!(rects(&model, AREA).len(), 2);
+    }
 }

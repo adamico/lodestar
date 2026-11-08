@@ -392,7 +392,8 @@ impl WindowModel {
 /// Dropping a dragged session onto a pane.
 impl WindowModel {
     /// Show `session` in `pane` as a drag and drop does: on [`DropZone::Middle`] it takes the
-    /// pane over. Whatever the pane showed before is then not shown anywhere.
+    /// pane over. Whatever the pane showed before is then not shown anywhere, and if the
+    /// session was shown in another pane it moves, leaving that pane empty.
     pub fn drop_session(
         &mut self,
         session: SessionId,
@@ -401,8 +402,13 @@ impl WindowModel {
         _area: Size,
     ) -> Result<(), Refused> {
         let _ = zone;
-        let slot = self.panes.get_mut(&pane).ok_or(Refused::NoSuchPane)?;
-        *slot = Some(session);
+        if !self.panes.contains_key(&pane) {
+            return Err(Refused::NoSuchPane);
+        }
+        if let Some(old) = self.pane_showing(session) {
+            self.panes.insert(old, None);
+        }
+        self.panes.insert(pane, Some(session));
         Ok(())
     }
 }
