@@ -87,6 +87,11 @@ mod tests {
     use super::*;
 
     const TEXT_ONLY: &str = include_str!("../../fixtures/stream-json/text-only.jsonl");
+    const MULTI_TURN: &str = include_str!("../../fixtures/stream-json/multi-turn.jsonl");
+    const TOOL_CALL: &str = include_str!("../../fixtures/stream-json/tool-call.jsonl");
+    const TOOL_DENIED: &str = include_str!("../../fixtures/stream-json/tool-denied.jsonl");
+    const PARTIAL_MESSAGES: &str =
+        include_str!("../../fixtures/stream-json/partial-messages.jsonl");
 
     fn mapped(recording: &str) -> Vec<SessionUpdate> {
         recording
@@ -118,6 +123,83 @@ mod tests {
                 assistant("pong"),
                 status(SessionStatus::WaitingForInput),
             ]
+        );
+    }
+
+    #[test]
+    fn every_turn_runs_then_waits_even_though_init_is_sent_again() {
+        assert_eq!(
+            mapped(MULTI_TURN),
+            [
+                status(SessionStatus::Running),
+                assistant("one"),
+                status(SessionStatus::WaitingForInput),
+                status(SessionStatus::Running),
+                assistant("one"),
+                status(SessionStatus::WaitingForInput),
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_calls_and_their_results_are_ignored_for_now_and_the_reply_still_arrives() {
+        assert_eq!(
+            mapped(TOOL_CALL),
+            [
+                status(SessionStatus::Running),
+                assistant(
+                    "`echo hello` printed \"hello\", and notes.txt says lodestar is a desktop app."
+                ),
+                status(SessionStatus::WaitingForInput),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_denied_tool_call_is_ignored_too_and_the_turn_still_ends_waiting() {
+        let updates = mapped(TOOL_DENIED);
+
+        assert_eq!(updates.len(), 3);
+        assert_eq!(updates[0], status(SessionStatus::Running));
+        assert!(matches!(
+            &updates[1],
+            SessionUpdate::TranscriptItem { item: TranscriptItem::Assistant(text), .. }
+                if text.contains("denied")
+        ));
+        assert_eq!(updates[2], status(SessionStatus::WaitingForInput));
+    }
+
+    #[test]
+    fn partial_message_chunks_add_nothing_to_the_complete_reply() {
+        assert_eq!(
+            mapped(PARTIAL_MESSAGES),
+            [
+                status(SessionStatus::Running),
+                assistant("pong pong."),
+                status(SessionStatus::WaitingForInput),
+            ]
+        );
+    }
+
+    #[test]
+    fn lines_that_are_not_json_or_not_known_are_ignored() {
+        assert_eq!(map_line(SessionId(7), ""), []);
+        assert_eq!(map_line(SessionId(7), "not json at all"), []);
+        assert_eq!(map_line(SessionId(7), r#"{"type":"bogus"}"#), []);
+        assert_eq!(map_line(SessionId(7), r#"{"type":"system","subtype":"init"}"#), []);
+        assert_eq!(map_line(SessionId(7), r#"{"type":"assistant"}"#), []);
+        assert_eq!(map_line(SessionId(7), "[1, 2]"), []);
+    }
+
+    #[test]
+    fn init_carries_claudes_own_session_id() {
+        let first_line = TEXT_ONLY.lines().next().unwrap();
+
+        assert_eq!(
+            parse_line(first_line),
+            Event::Init {
+                claude_session_id: "e25be59c-9c60-4c20-a69b-1a7ecc1ebaf4".into()
+            }
         );
     }
 }
