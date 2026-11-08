@@ -126,3 +126,63 @@ mod ordering {
         assert_eq!(store.sessions_in(ProjectId(1))[0].id, created);
     }
 }
+
+mod recent_folders {
+    use std::path::PathBuf;
+
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{ProjectId, SessionStore};
+
+    #[test]
+    fn recent_folders_start_as_the_fixture_projects_paths() {
+        let store = SessionStore::load(&mut Fixtures);
+
+        assert_eq!(
+            store.recent_folders(),
+            [
+                PathBuf::from("/home/me/code/lodestar"),
+                PathBuf::from("/home/me/dotfiles")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_browsed_folder_joins_the_front_of_the_recent_list_once() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        store.add_recent_folder("/home/me/code/pixel-forge".into());
+        store.add_recent_folder("/home/me/dotfiles".into());
+        store.add_recent_folder("/home/me/code/pixel-forge".into());
+
+        assert_eq!(
+            store.recent_folders(),
+            [
+                PathBuf::from("/home/me/code/pixel-forge"),
+                PathBuf::from("/home/me/dotfiles"),
+                PathBuf::from("/home/me/code/lodestar"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_browsed_folder_becomes_a_project_named_after_its_last_component() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        let project = store.find_or_create_project("/home/me/code/pixel-forge".into());
+
+        let created = store.project(project).unwrap();
+        assert_eq!(created.name, "pixel-forge");
+        assert_eq!(created.path, PathBuf::from("/home/me/code/pixel-forge"));
+        assert_eq!(store.projects().len(), 3);
+    }
+
+    #[test]
+    fn browsing_to_an_existing_projects_folder_finds_that_project() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        let project = store.find_or_create_project("/home/me/dotfiles".into());
+
+        assert_eq!(project, ProjectId(1));
+        assert_eq!(store.projects().len(), 2);
+    }
+}
