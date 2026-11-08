@@ -109,7 +109,11 @@ impl SessionStore {
     }
 
     /// Start a new session in `project`: it waits for input with an empty Transcript.
+    ///
+    /// It is titled "<project name> #n", where n counts the sessions in the Project.
     pub fn create_session(&mut self, project: ProjectId) -> SessionId {
+        let name = self.project(project).map(|p| p.name.as_str()).unwrap_or("");
+        let title = format!("{name} #{}", self.sessions_in(project).len() + 1);
         let id = SessionId(
             self.sessions
                 .iter()
@@ -119,7 +123,7 @@ impl SessionStore {
         );
         self.sessions.push(Session {
             id,
-            title: String::new(),
+            title,
             project,
             status: SessionStatus::WaitingForInput,
             started_at: 0,

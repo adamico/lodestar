@@ -41,7 +41,7 @@ mod new_sessions {
     };
 
     /// Two Projects; lodestar has two sessions, dotfiles has none.
-    struct Fixtures;
+    pub struct Fixtures;
 
     fn session(id: u64, title: &str, project: u64, started_at: u64) -> Session {
         Session {
@@ -87,5 +87,22 @@ mod new_sessions {
         assert_eq!(created.project, ProjectId(0));
         assert_eq!(created.status, SessionStatus::WaitingForInput);
         assert!(created.transcript.items().is_empty());
+    }
+}
+
+
+mod naming {
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{ProjectId, SessionStore};
+
+    #[test]
+    fn a_new_session_is_titled_after_its_project_and_counted_within_it() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        let third_in_lodestar = store.create_session(ProjectId(0));
+        let first_in_dotfiles = store.create_session(ProjectId(1));
+
+        assert_eq!(store.session(third_in_lodestar).unwrap().title, "lodestar #3");
+        assert_eq!(store.session(first_in_dotfiles).unwrap().title, "dotfiles #1");
     }
 }
