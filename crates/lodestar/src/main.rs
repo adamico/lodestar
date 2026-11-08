@@ -1,8 +1,12 @@
+// The `Action` derive emits `gpui::` paths; the kit is our GPUI.
+extern crate gpui_kit as gpui;
+
 mod fixtures;
 mod leader;
 mod main_window;
 mod picker;
 mod sidebar_view;
+mod transcript_view;
 
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
@@ -15,6 +19,7 @@ fn main() {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
+        transcript_view::bind_keys(cx);
         leader::init(cx);
 
         let sessions = SessionStore::load(&mut FixtureSource);

@@ -17,6 +17,8 @@ use lodestar_core::window::{Direction, PaneId, Refused, WindowModel};
 use crate::leader::{CancelLeader, LEADER_FLAG, Leader, LeaderCommand, Mode, WINDOW_CONTEXT};
 use crate::sidebar_view::SidebarState;
 
+use crate::transcript_view::{self, Scroll, TranscriptViews};
+
 const PANE_HEADER_HEIGHT: Pixels = px(30.);
 /// Lodestar's one accent colour: marks the focused pane.
 const ACCENT: u32 = 0x3b82f6;
@@ -27,6 +29,8 @@ const FLASH_DURATION: Duration = Duration::from_millis(150);
 pub struct MainWindow {
     pub(crate) window_model: WindowModel,
     pub(crate) sessions: SessionStore,
+    transcripts: TranscriptViews,
+    /// Keys go to the window unless a text input took them.
     focus_handle: FocusHandle,
     mode: Mode,
     pub(crate) sidebar: SidebarState,
@@ -41,12 +45,26 @@ impl MainWindow {
         Self {
             window_model: WindowModel::new(),
             sessions,
+            transcripts: TranscriptViews::default(),
             focus_handle: cx.focus_handle(),
             mode: Mode::default(),
             sidebar: SidebarState::default(),
             flashing: None,
             pickers: HashMap::new(),
         }
+    }
+
+    /// Scroll the focused pane's Transcript, if it shows one.
+    pub fn scroll_transcript(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
+        self.transcripts
+            .scroll(self.window_model.focused_pane(), scroll);
+        cx.notify();
+    }
+
+    /// Expand or collapse the tool call at `ix` in `pane`.
+    pub fn toggle_tool_call(&mut self, pane: PaneId, ix: usize, cx: &mut Context<Self>) {
+        self.transcripts.toggle_tool_call(pane, ix);
+        cx.notify();
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -202,9 +220,21 @@ impl MainWindow {
             )
     }
 
-    fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let layout = self.window_model.layout(self.pane_area(window));
         let focused = self.window_model.focused_pane();
+        self.transcripts
+            .retain(|pane| self.window_model.session_in(pane).is_some());
+        let panes: Vec<Div> = layout
+            .panes
+            .iter()
+            .map(|pane| {
+                place(
+                    self.render_pane(pane.pane, pane.pane == focused, window, cx),
+                    pane.rect,
+                )
+            })
+            .collect();
 
         div()
             .relative()
@@ -217,18 +247,19 @@ impl MainWindow {
                     .iter()
                     .map(|divider| place(div().bg(cx.theme().border), divider.rect)),
             )
-            .children(layout.panes.iter().map(|pane| {
-                place(
-                    self.render_pane(pane.pane, pane.pane == focused, cx),
-                    pane.rect,
-                )
-            }))
+            .children(panes)
             .when(self.mode == Mode::Leader, |this| {
                 this.child(self.render_hint_popup(cx))
             })
     }
 
-    fn render_pane(&self, pane: PaneId, focused: bool, cx: &mut Context<Self>) -> Div {
+    fn render_pane(
+        &mut self,
+        pane: PaneId,
+        focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let theme = cx.theme();
         let background = theme.background;
         let flashing = self.flashing == Some(pane);
@@ -280,23 +311,15 @@ impl MainWindow {
                 .child("×"),
         );
         let body = match session {
-            Some(session) => v_flex()
-                .flex_1()
-                .overflow_hidden()
-                .p_2()
-                .gap_2()
-                .text_sm()
-                .children(
-                    session
-                        .transcript
-                        .items()
-                        .iter()
-                        .map(|item| div().child(item.clone())),
-                ),
-            None => self.render_picker(pane, cx),
+            Some(session) => self
+                .transcripts
+                .render(pane, session.id, &session.transcript, window, cx)
+                .into_any_element(),
+            None => self.render_picker(pane, cx).into_any_element(),
         };
 
         v_flex()
+            .overflow_hidden()
             .border_1()
             .border_color(border)
             .bg(background)
@@ -315,9 +338,8 @@ impl MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
+        let root = h_flex()
             .key_context(self.key_context())
-            .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_leader))
             .on_action(cx.listener(Self::on_cancel_leader))
             .on_key_down(cx.listener(Self::on_key_down))
@@ -326,8 +348,10 @@ impl Render for MainWindow {
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_sidebar_drag_end))
             })
             .size_full()
+            .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .text_color(cx.theme().foreground);
+        transcript_view::on_scroll_actions(root, cx)
             .children(self.render_sidebar(cx))
             .child(self.render_panes(window, cx))
     }
