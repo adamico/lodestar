@@ -1,6 +1,7 @@
 //! Sessions, the Projects they work in, and the seam they arrive through.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Identifies a session for as long as the app runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -109,12 +110,35 @@ pub struct InitialSessions {
     pub sessions: Vec<Session>,
 }
 
+/// Something that happened to a session after startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionUpdate {
+    /// An item that happened after every item so far in the session's Transcript.
+    TranscriptItem {
+        session: SessionId,
+        item: TranscriptItem,
+    },
+    /// The session's status changed.
+    Status {
+        session: SessionId,
+        status: SessionStatus,
+    },
+}
+
 /// Where sessions come from: fixtures in Milestone 1, real agents from Milestone 2.
 ///
-/// It will also push Transcript and status updates over time; for now it only supplies the
-/// sessions that exist at startup.
+/// It supplies the sessions that exist at startup, then is polled for the updates that
+/// arrived since. Polling keeps this crate free of threads: whoever owns the source (the
+/// window) drives it from its own timer.
 pub trait SessionSource {
     fn initial_sessions(&mut self) -> InitialSessions;
+
+    /// The updates that arrived up to `now`, measured from startup, in the order they happened.
+    /// Each update is returned once. Sources that never change return nothing.
+    fn poll_updates(&mut self, now: Duration) -> Vec<SessionUpdate> {
+        let _ = now;
+        Vec::new()
+    }
 }
 
 /// Every known Project and session.
@@ -201,6 +225,28 @@ impl SessionStore {
 
     pub fn session(&self, id: SessionId) -> Option<&Session> {
         self.sessions.iter().find(|session| session.id == id)
+    }
+
+    /// Record `update` on its session: append the item to its Transcript, or move it to the
+    /// new status. Whether the session is shown anywhere is not the store's concern; updates
+    /// land all the same. Updates for unknown sessions are dropped.
+    pub fn apply(&mut self, update: SessionUpdate) {
+        match update {
+            SessionUpdate::TranscriptItem { session, item } => {
+                if let Some(session) = self.session_mut(session) {
+                    session.transcript.push(item);
+                }
+            }
+            SessionUpdate::Status { session, status } => {
+                if let Some(session) = self.session_mut(session) {
+                    session.status = status;
+                }
+            }
+        }
+    }
+
+    fn session_mut(&mut self, id: SessionId) -> Option<&mut Session> {
+        self.sessions.iter_mut().find(|session| session.id == id)
     }
 
     /// Start a new session in `project`: it waits for input with an empty Transcript.

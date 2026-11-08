@@ -306,3 +306,77 @@ mod picker_selection {
         assert_eq!(picker.selected(), 0);
     }
 }
+
+mod updates {
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{
+        SessionId, SessionStatus, SessionStore, SessionUpdate, TranscriptItem,
+    };
+
+    #[test]
+    fn an_applied_transcript_item_is_appended_after_everything_so_far() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::Assistant("First.".into()),
+        });
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::Assistant("Second.".into()),
+        });
+
+        assert_eq!(
+            store.session(SessionId(1)).unwrap().transcript.items(),
+            [
+                TranscriptItem::User("Hello".into()),
+                TranscriptItem::Assistant("First.".into()),
+                TranscriptItem::Assistant("Second.".into()),
+            ]
+        );
+        assert_eq!(
+            store
+                .session(SessionId(0))
+                .unwrap()
+                .transcript
+                .items()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn an_applied_status_moves_the_session_to_it() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        store.apply(SessionUpdate::Status {
+            session: SessionId(0),
+            status: SessionStatus::WaitingForInput,
+        });
+
+        assert_eq!(
+            store.session(SessionId(0)).unwrap().status,
+            SessionStatus::WaitingForInput
+        );
+        assert_eq!(
+            store.session(SessionId(1)).unwrap().status,
+            SessionStatus::Done
+        );
+    }
+
+    #[test]
+    fn an_update_for_an_unknown_session_changes_nothing() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let before = store.clone();
+
+        store.apply(SessionUpdate::Status {
+            session: SessionId(99),
+            status: SessionStatus::Done,
+        });
+
+        assert_eq!(
+            store.sessions_newest_first(),
+            before.sessions_newest_first()
+        );
+    }
+}
