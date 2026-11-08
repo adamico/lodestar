@@ -365,6 +365,19 @@ impl WindowModel {
         }
         self.root.swap_leaves(a, b);
     }
+
+    /// Swap the focused pane with its neighbour on the `direction` side (see
+    /// [`Self::neighbour_in_direction`]); focus stays with the moved pane. Returns whether a swap
+    /// happened; none does at the window edge.
+    pub fn swap_in_direction(&mut self, direction: Direction, area: Size) -> bool {
+        match self.neighbour_in_direction(self.focused, direction, area) {
+            Some(neighbour) => {
+                self.swap(self.focused, neighbour);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 impl Node {

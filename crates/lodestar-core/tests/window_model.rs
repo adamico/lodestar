@@ -620,4 +620,65 @@ mod swap {
         assert_eq!(model.focused_pane(), top_right);
         assert_eq!(rect_of_session(&model, SessionId(2)), LEFT);
     }
+
+    #[test]
+    fn swap_right_from_the_left_pane_moves_it_and_focus_to_the_level_right_pane() {
+        let mut model = WindowModel::new();
+        let (left, top_right, _) = uneven(&mut model);
+        model.focus(left);
+
+        let swapped = model.swap_in_direction(Direction::Right, AREA);
+
+        assert!(swapped);
+        assert_eq!(model.focused_pane(), left);
+        assert_eq!(rect_of_session(&model, SessionId(1)), TOP_RIGHT);
+        assert_eq!(rect_of_session(&model, SessionId(2)), LEFT);
+        assert_eq!(rect_of_session(&model, SessionId(3)), BOTTOM_RIGHT);
+        assert_eq!(model.session_in(top_right), Some(SessionId(2)));
+    }
+
+    #[test]
+    fn swap_down_from_the_top_right_pane_trades_places_with_the_one_below() {
+        let mut model = WindowModel::new();
+        let (_, top_right, _) = uneven(&mut model);
+        model.focus(top_right);
+
+        assert!(model.swap_in_direction(Direction::Down, AREA));
+
+        assert_eq!(rect_of_session(&model, SessionId(2)), BOTTOM_RIGHT);
+        assert_eq!(rect_of_session(&model, SessionId(3)), TOP_RIGHT);
+        assert_eq!(rect_of_session(&model, SessionId(1)), LEFT);
+    }
+
+    #[test]
+    fn swap_towards_the_window_edge_does_nothing() {
+        let mut model = WindowModel::new();
+        let (left, _, _) = uneven(&mut model);
+        model.focus(left);
+
+        assert!(!model.swap_in_direction(Direction::Left, AREA));
+        assert!(!model.swap_in_direction(Direction::Up, AREA));
+
+        assert_eq!(model.focused_pane(), left);
+        assert_eq!(rect_of_session(&model, SessionId(1)), LEFT);
+        assert_eq!(rect_of_session(&model, SessionId(2)), TOP_RIGHT);
+    }
+
+    #[test]
+    fn swap_an_empty_pane_with_a_session_pane_and_the_empty_one_moves_too() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+        model.open_session(SessionId(1), left);
+        model.focus(right);
+
+        assert!(model.swap_in_direction(Direction::Left, AREA));
+
+        assert_eq!(model.focused_pane(), right);
+        assert_eq!(rect_of_session(&model, SessionId(1)), Rect::new(801.0, 0.0, 800.0, 600.0));
+        let layout = model.layout(AREA);
+        assert_eq!(layout.panes[0].pane, right);
+        assert_eq!(model.session_in(right), None);
+        assert_eq!(model.sessions_shown(), vec![SessionId(1)]);
+    }
 }
