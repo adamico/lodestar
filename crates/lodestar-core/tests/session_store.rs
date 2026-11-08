@@ -783,4 +783,38 @@ mod turn_progress {
             })
         );
     }
+
+    #[test]
+    fn only_a_running_session_has_a_working_line_counting_from_its_turn_start() {
+        let (mut store, session) = running(Duration::from_secs(5));
+        store.apply(progress(session, Phase::Thinking, 1500));
+
+        assert_eq!(
+            store.working_line(session, Duration::from_secs(60)),
+            Some("55s \u{b7} 1.5k tokens \u{b7} Thinking".into())
+        );
+
+        store.apply(SessionUpdate::Status {
+            session,
+            status: SessionStatus::WaitingForInput,
+        });
+
+        assert_eq!(store.working_line(session, Duration::from_secs(61)), None);
+    }
+
+    #[test]
+    fn a_session_set_running_without_a_turn_just_says_it_is_working() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        store.apply(SessionUpdate::Status {
+            session,
+            status: SessionStatus::Running,
+        });
+
+        assert_eq!(
+            store.working_line(session, Duration::from_secs(9)),
+            Some("Working".into())
+        );
+    }
 }

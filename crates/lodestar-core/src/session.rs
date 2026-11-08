@@ -372,6 +372,18 @@ impl SessionStore {
         self.turns.get(&session)
     }
 
+    /// The working indicator's text for `session` at `now`, only while it runs: its turn's
+    /// progress line, or just the word for working when no turn was recorded.
+    pub fn working_line(&self, session: SessionId, now: Duration) -> Option<String> {
+        if self.session(session)?.status != SessionStatus::Running {
+            return None;
+        }
+        Some(match self.turn(session) {
+            Some(turn) => turn.line(now),
+            None => Phase::Working.label(),
+        })
+    }
+
     /// Record `update` on its session: append the item to its Transcript, or move it to the
     /// new status. Whether the session is shown anywhere is not the store's concern; updates
     /// land all the same. Updates for unknown sessions are dropped.
