@@ -99,4 +99,33 @@ mod open_session {
         assert_eq!(model.pane_showing(SessionId(1)), None);
         assert_eq!(model.pane_showing(SessionId(2)), Some(left));
     }
+
+    #[test]
+    fn opening_a_session_already_shown_elsewhere_focuses_that_pane_instead() {
+        let mut model = WindowModel::new();
+        let [left, right] = panes(&model)[..] else {
+            unreachable!()
+        };
+        model.open_session(SessionId(1), left);
+        model.open_session(SessionId(2), right);
+        model.focus(right);
+
+        model.open_session(SessionId(1), right);
+
+        assert_eq!(model.focused_pane(), left);
+        assert_eq!(model.session_in(left), Some(SessionId(1)));
+        assert_eq!(model.session_in(right), Some(SessionId(2)));
+    }
+
+    #[test]
+    fn reopening_a_session_in_its_own_pane_changes_nothing() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        model.open_session(SessionId(1), left);
+
+        model.open_session(SessionId(1), left);
+
+        assert_eq!(model.focused_pane(), left);
+        assert_eq!(model.sessions_shown(), vec![SessionId(1)]);
+    }
 }

@@ -190,8 +190,14 @@ impl WindowModel {
 
     /// Show `session` in `pane`, as a sidebar click does.
     ///
-    /// A pane that no longer exists is ignored.
+    /// If some pane already shows the session, that pane is focused instead, so a session
+    /// is never in two panes. Otherwise the session fills `pane`, replacing whatever it showed;
+    /// the replaced session is then not shown anywhere. A pane that no longer exists is ignored.
     pub fn open_session(&mut self, session: SessionId, pane: PaneId) {
+        if let Some(showing) = self.pane_showing(session) {
+            self.focused = showing;
+            return;
+        }
         if let Some(slot) = self.panes.get_mut(&pane) {
             *slot = Some(session);
         }
