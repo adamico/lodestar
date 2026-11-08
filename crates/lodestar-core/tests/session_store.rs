@@ -439,7 +439,14 @@ mod sending {
         let sent = store.send(session, "  \n ");
 
         assert_eq!(sent, Err(SendRefusal::Blank));
-        assert!(store.session(session).unwrap().transcript.items().is_empty());
+        assert!(
+            store
+                .session(session)
+                .unwrap()
+                .transcript
+                .items()
+                .is_empty()
+        );
         assert_eq!(
             store.session(session).unwrap().status,
             SessionStatus::WaitingForInput
@@ -463,7 +470,14 @@ mod sending {
 
         assert_eq!(store.can_send(session), Ok(()));
         assert_eq!(store.can_send(SessionId(0)), Err(SendRefusal::SessionDone));
-        assert!(store.session(session).unwrap().transcript.items().is_empty());
+        assert!(
+            store
+                .session(session)
+                .unwrap()
+                .transcript
+                .items()
+                .is_empty()
+        );
     }
 
     #[test]

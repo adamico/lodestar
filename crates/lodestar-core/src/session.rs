@@ -312,8 +312,12 @@ impl SessionStore {
         if text.trim().is_empty() {
             return Err(SendRefusal::Blank);
         }
-        let session = self.session_mut(session).ok_or(SendRefusal::UnknownSession)?;
-        session.transcript.push(TranscriptItem::User(text.to_owned()));
+        let session = self
+            .session_mut(session)
+            .ok_or(SendRefusal::UnknownSession)?;
+        session
+            .transcript
+            .push(TranscriptItem::User(text.to_owned()));
         session.status = SessionStatus::Running;
         Ok(())
     }

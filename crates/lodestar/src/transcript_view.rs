@@ -1,29 +1,33 @@
-//! A pane's Transcript: a virtualised list of its items and the (disabled) input box below.
+//! A pane's Transcript: a virtualised list of its items and the input box below.
 //!
 //! The list is GPUI's `list`, which measures each row as it is drawn, so markdown of any
 //! height works. Its `ListState` is the per-pane scroll handle. A pane whose session is
 //! running follows the tail: new rows keep the end in view until the user scrolls up, which
 //! pauses following and shows a "Jump to latest" pill that resumes it.
+//!
+//! The input box sends on `enter` (`shift+enter` inserts a newline) and `escape` hands the
+//! keyboard back to the window. Whether a session can take a message, and what sending does to
+//! it, are rules of `lodestar_core::session::SessionStore`; this only forwards.
 
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::component::collapsible::Collapsible;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lodestar_core::session::{SessionId, Transcript, TranscriptItem};
+use lodestar_core::session::{SendRefusal, Session, SessionId, SessionStatus, TranscriptItem};
 use lodestar_core::window::PaneId;
 
 use crate::main_window::{MainWindow, pane_element_id};
 
 /// Rows GPUI lays out beyond the visible part of the list, so scrolling stays smooth.
 const LIST_OVERDRAW: Pixels = px(400.);
-const INPUT_PLACEHOLDER: &str = "Message the agent";
-const INPUT_TOOLTIP: &str = "Sending arrives in Milestone 2";
+const INPUT_PLACEHOLDER: &str = "Message the agent (enter sends, shift+enter for a newline)";
+/// How many rows the input box grows to before it scrolls.
+const INPUT_MAX_ROWS: usize = 6;
 const USER_MARKER: &str = "You";
 const COLLAPSED_MARKER: &str = "\u{25B8}";
 const EXPANDED_MARKER: &str = "\u{25BE}";
@@ -35,7 +39,8 @@ actions!(
         ScrollHalfPageUp,
         ScrollHalfPageDown,
         ScrollToTop,
-        ScrollToBottom
+        ScrollToBottom,
+        LeaveInput
     ]
 );
 
@@ -60,11 +65,14 @@ pub const TRANSCRIPT_FLAG: &str = "transcript";
 /// focused text input.
 pub fn bind_keys(cx: &mut App) {
     const CONTEXT: Option<&str> = Some("MainWindow && transcript && !Input");
+    /// Bindings that apply only while one of the window's text inputs has the keyboard.
+    const INPUT_CONTEXT: Option<&str> = Some("MainWindow > Input");
     cx.bind_keys([
         KeyBinding::new("ctrl-u", ScrollHalfPageUp, CONTEXT),
         KeyBinding::new("ctrl-d", ScrollHalfPageDown, CONTEXT),
         KeyBinding::new("g", ScrollToTop, CONTEXT),
         KeyBinding::new("shift-g", ScrollToBottom, CONTEXT),
+        KeyBinding::new("escape", LeaveInput, INPUT_CONTEXT),
     ]);
 }
 
@@ -85,6 +93,10 @@ pub fn on_scroll_actions(element: Div, cx: &mut Context<MainWindow>) -> Div {
                 this.scroll_transcript(Scroll::Bottom, cx)
             }),
         )
+        .on_action(cx.listener(|this, _: &LeaveInput, window, cx| {
+            window.focus(&this.focus_handle(), cx);
+            cx.notify();
+        }))
 }
 
 /// The view state of every pane that shows a Transcript, keyed by pane.
@@ -99,7 +111,11 @@ struct PaneTranscript {
     session: SessionId,
     /// The scroll handle. Row heights are measured as rows are drawn.
     list: ListState,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
+    /// Keeps the input's events (enter, focus) flowing to the window while the pane lives.
+    _input_events: Subscription,
+    /// The placeholder the input shows: the invitation to type, or why sending is refused.
+    placeholder: &'static str,
     /// Indices of the tool calls the user has expanded.
     expanded: HashSet<usize>,
     /// Whether the list was told to follow its tail, which it does for a running session.
@@ -107,27 +123,49 @@ struct PaneTranscript {
 }
 
 impl TranscriptViews {
-    /// Render `transcript` in `pane`: the list above, the disabled input box below.
+    /// Render `session`'s Transcript in `pane`: the list above, the input box below.
     ///
-    /// While `streaming`, the list follows new items; once the user scrolls up, a pill over
-    /// the bottom of the list offers to jump back to the latest.
+    /// While the session runs, the list follows new items; once the user scrolls up, a pill
+    /// over the bottom of the list offers to jump back to the latest. `can_send` is the
+    /// store's answer on whether the session takes a message now; a refusal is shown by the
+    /// box.
     pub fn render(
         &mut self,
         pane: PaneId,
-        session: SessionId,
-        transcript: &Transcript,
-        streaming: bool,
+        session: &Session,
+        can_send: Result<(), SendRefusal>,
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> impl IntoElement + use<> {
+        let transcript = &session.transcript;
+        let streaming = session.status == SessionStatus::Running;
         let state = self.sync(
             pane,
-            session,
+            session.id,
             transcript.items().len(),
             streaming,
             window,
             cx,
         );
+        let placeholder = match can_send {
+            Ok(()) => INPUT_PLACEHOLDER,
+            Err(refusal) => refusal.reason(),
+        };
+        if state.placeholder != placeholder {
+            state.placeholder = placeholder;
+            state.input.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx)
+            });
+        }
+        let notice = can_send.err().map(|refusal| {
+            div()
+                .px_1()
+                .pb_1()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(refusal.reason())
+        });
+        let disabled = can_send == Err(SendRefusal::SessionDone);
         let paused = streaming && !state.list.is_following_tail();
         let items = transcript.items().to_vec();
         let expanded = state.expanded.clone();
@@ -181,15 +219,30 @@ impl TranscriptViews {
                     .when(paused, |this| this.child(render_jump_to_latest(pane, cx))),
             )
             .child(
-                div()
+                v_flex()
                     .id(pane_element_id("input", pane))
                     .flex_shrink_0()
                     .p_2()
                     .border_t_1()
                     .border_color(cx.theme().border)
-                    .tooltip(|window, cx| Tooltip::new(INPUT_TOOLTIP).build(window, cx))
-                    .child(Input::new(&state.input).disabled(true)),
+                    .children(notice)
+                    .child(Textarea::new(&state.input).disabled(disabled)),
             )
+    }
+
+    /// What the user has typed into `pane`'s input box.
+    pub fn input_text(&self, pane: PaneId, cx: &App) -> String {
+        self.panes
+            .get(&pane)
+            .map(|state| state.input.read(cx).value().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Empty `pane`'s input box, once its text was sent.
+    pub fn clear_input(&mut self, pane: PaneId, window: &mut Window, cx: &mut App) {
+        if let Some(state) = self.panes.get(&pane) {
+            state.input.update(cx, |input, cx| input.clean(window, cx));
+        }
     }
 
     /// Show or hide the input and output of the tool call at `ix` in `pane`.
@@ -254,14 +307,33 @@ impl TranscriptViews {
         streaming: bool,
         window: &mut Window,
         cx: &mut Context<MainWindow>,
-    ) -> &PaneTranscript {
+    ) -> &mut PaneTranscript {
         let mut fresh = false;
         let state = self.panes.entry(pane).or_insert_with(|| {
             fresh = true;
+            let input = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .placeholder(INPUT_PLACEHOLDER)
+                    .submit_on_enter(true)
+                    .auto_grow(1, INPUT_MAX_ROWS)
+            });
+            let input_events = cx.subscribe_in(
+                &input,
+                window,
+                move |this, _, event, window, cx| match event {
+                    InputEvent::PressEnter { shift: false, .. } => {
+                        this.send_from_input(pane, window, cx)
+                    }
+                    InputEvent::Focus => this.input_focused(pane, cx),
+                    _ => {}
+                },
+            );
             PaneTranscript {
                 session,
                 list: ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW),
-                input: cx.new(|cx| InputState::new(window, cx).placeholder(INPUT_PLACEHOLDER)),
+                input,
+                _input_events: input_events,
+                placeholder: INPUT_PLACEHOLDER,
                 expanded: HashSet::new(),
                 follows_tail: false,
             }
