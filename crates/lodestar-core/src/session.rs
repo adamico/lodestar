@@ -41,16 +41,27 @@ pub enum SessionStatus {
 const HEADLINE_CHARS: usize = 80;
 
 /// One tool the Agent ran: what it was asked and what came back.
+///
+/// The call and its result are two events, so the output may still be on its way: until it
+/// arrives the call is a pending tool call (see `SessionUpdate::ToolResult`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
+    /// Stable across the call and its result: the Agent's own tool_use id.
+    pub id: String,
     pub name: String,
     /// A short description of this call, usually the command or the file touched.
     pub summary: String,
     pub input: String,
-    pub output: String,
+    /// What came back, once it has.
+    pub output: Option<String>,
 }
 
 impl ToolCall {
+    /// Whether the result has yet to arrive.
+    pub fn is_pending(&self) -> bool {
+        self.output.is_none()
+    }
+
     /// The one line a collapsed tool call shows: the tool's name and the first line of its
     /// summary (or of its input, when it has no summary), cut with an ellipsis when too long.
     pub fn headline(&self) -> String {
@@ -103,6 +114,22 @@ impl Transcript {
     pub fn push(&mut self, item: TranscriptItem) {
         self.items.push(item);
     }
+
+    /// Fill in the output of the tool call with `call_id`. Returns whether one was found;
+    /// when none was, nothing changes.
+    pub fn fill_tool_result(&mut self, call_id: &str, output: String) -> bool {
+        let call = self.items.iter_mut().rev().find_map(|item| match item {
+            TranscriptItem::ToolCall(call) if call.id == call_id => Some(call),
+            _ => None,
+        });
+        match call {
+            Some(call) => {
+                call.output = Some(output);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +162,13 @@ pub enum SessionUpdate {
     Status {
         session: SessionId,
         status: SessionStatus,
+    },
+    /// The result of the pending tool call `call_id` arrived. One for a call the Transcript
+    /// does not hold is a protocol error and is dropped.
+    ToolResult {
+        session: SessionId,
+        call_id: String,
+        output: String,
     },
 }
 
@@ -294,6 +328,15 @@ impl SessionStore {
             SessionUpdate::Status { session, status } => {
                 if let Some(session) = self.session_mut(session) {
                     session.status = status;
+                }
+            }
+            SessionUpdate::ToolResult {
+                session,
+                call_id,
+                output,
+            } => {
+                if let Some(session) = self.session_mut(session) {
+                    session.transcript.fill_tool_result(&call_id, output);
                 }
             }
         }

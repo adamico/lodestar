@@ -310,8 +310,25 @@ mod picker_selection {
 mod updates {
     use super::new_sessions::Fixtures;
     use lodestar_core::session::{
-        SessionId, SessionStatus, SessionStore, SessionUpdate, TranscriptItem,
+        SessionId, SessionStatus, SessionStore, SessionUpdate, ToolCall, TranscriptItem,
     };
+
+    fn pending_call(id: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: "Bash".into(),
+            summary: "cargo test".into(),
+            input: "cargo test".into(),
+            output: None,
+        }
+    }
+
+    fn call_with(id: &str, output: &str) -> ToolCall {
+        ToolCall {
+            output: Some(output.into()),
+            ..pending_call(id)
+        }
+    }
 
     #[test]
     fn an_applied_transcript_item_is_appended_after_everything_so_far() {
@@ -390,6 +407,83 @@ mod updates {
         store.apply(SessionUpdate::Status {
             session: SessionId(99),
             status: SessionStatus::Done,
+        });
+
+        assert_eq!(
+            store.sessions_newest_first(),
+            before.sessions_newest_first()
+        );
+    }
+
+    #[test]
+    fn a_tool_result_fills_the_output_of_the_pending_call_with_its_id() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::ToolCall(pending_call("toolu_1")),
+        });
+
+        store.apply(SessionUpdate::ToolResult {
+            session: SessionId(1),
+            call_id: "toolu_1".into(),
+            output: "4 passed".into(),
+        });
+
+        assert_eq!(
+            store.session(SessionId(1)).unwrap().transcript.items(),
+            [
+                TranscriptItem::User("Hello".into()),
+                TranscriptItem::ToolCall(call_with("toolu_1", "4 passed")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tool_result_still_finds_its_call_after_more_items_were_pushed() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::ToolCall(pending_call("toolu_1")),
+        });
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::Assistant("Still running...".into()),
+        });
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::ToolCall(pending_call("toolu_2")),
+        });
+
+        store.apply(SessionUpdate::ToolResult {
+            session: SessionId(1),
+            call_id: "toolu_1".into(),
+            output: "4 passed".into(),
+        });
+
+        assert_eq!(
+            store.session(SessionId(1)).unwrap().transcript.items(),
+            [
+                TranscriptItem::User("Hello".into()),
+                TranscriptItem::ToolCall(call_with("toolu_1", "4 passed")),
+                TranscriptItem::Assistant("Still running...".into()),
+                TranscriptItem::ToolCall(pending_call("toolu_2")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tool_result_for_an_unknown_call_changes_nothing() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::ToolCall(pending_call("toolu_1")),
+        });
+        let before = store.clone();
+
+        store.apply(SessionUpdate::ToolResult {
+            session: SessionId(1),
+            call_id: "toolu_404".into(),
+            output: "lost".into(),
         });
 
         assert_eq!(

@@ -1,25 +1,42 @@
 //! From Claude Code's stream-json lines to `SessionUpdate`s, as a pure function.
 //!
-//! Every line is one JSON object with a `type`. Only three kinds matter to Lodestar so far:
-//! `system`/`init` opens a turn, `assistant` carries what the Agent said, and `result` closes
-//! the turn. Everything else (tool calls and their results, progress blurbs, rate-limit
-//! notes, partial messages, lines that are not JSON) is ignored without complaint, because
-//! Claude Code adds event kinds freely and a stray line must never take the session down.
+//! Every line is one JSON object with a `type`. `system`/`init` opens a turn, `assistant`
+//! carries what the Agent said and the tools it called, `user` carries those tools' results,
+//! `system`/`permission_denied` says a tool was refused, and `result` closes the turn.
+//! Everything else (progress blurbs, rate-limit notes, partial messages, lines that are not
+//! JSON) is ignored without complaint, because Claude Code adds event kinds freely and a
+//! stray line must never take the session down.
+//!
+//! A tool call and its result are two lines linked by the tool_use id, so a call becomes a
+//! pending `ToolCall` item and its result a `SessionUpdate::ToolResult` (ADR 0002).
 
-use lodestar_core::session::{SessionId, SessionStatus, SessionUpdate, TranscriptItem};
-use serde_json::Value;
+use lodestar_core::session::{SessionId, SessionStatus, SessionUpdate, ToolCall, TranscriptItem};
+use serde_json::{Map, Value};
 
 /// One stream-json line, reduced to what Lodestar reacts to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// A turn began. Claude Code sends one at the start of every turn, with the same id.
     Init { claude_session_id: String },
-    /// Text the Agent said, one entry per text block, as markdown.
-    AssistantText(Vec<String>),
+    /// What one `assistant` line carried, block by block: text as markdown, and tool calls.
+    Assistant(Vec<AssistantBlock>),
+    /// Results for tool calls, one per `tool_result` block, each with the call's id.
+    ToolResults(Vec<(String, String)>),
     /// The turn ended. `is_error` is for a later slice; the Agent is alive either way.
     Result { is_error: bool },
     /// A line Lodestar does not react to.
     Ignored,
+}
+
+/// One content block of an `assistant` line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssistantBlock {
+    Text(String),
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 /// Read one line of stream-json. Never fails: what cannot be read is [`Event::Ignored`].
@@ -34,22 +51,130 @@ pub fn parse_line(line: &str) -> Event {
             },
             None => Event::Ignored,
         },
+        Some("system") if value["subtype"] == "permission_denied" => {
+            match (value["tool_use_id"].as_str(), value["message"].as_str()) {
+                (Some(id), Some(message)) => {
+                    Event::ToolResults(vec![(id.to_owned(), format!("Denied: {message}"))])
+                }
+                _ => Event::Ignored,
+            }
+        }
         // Subagent output comes with a parent tool use; it is not the Agent talking to us.
         Some("assistant") if value["parent_tool_use_id"].is_null() => {
-            let texts: Vec<String> = value["message"]["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|block| block["type"] == "text")
-                .filter_map(|block| block["text"].as_str())
-                .map(str::to_owned)
+            let blocks = content_blocks(&value)
+                .filter_map(|block| match block["type"].as_str() {
+                    Some("text") => block
+                        .get("text")?
+                        .as_str()
+                        .map(|t| AssistantBlock::Text(t.to_owned())),
+                    Some("tool_use") => Some(AssistantBlock::ToolUse {
+                        id: block["id"].as_str()?.to_owned(),
+                        name: block["name"].as_str()?.to_owned(),
+                        input: block["input"].clone(),
+                    }),
+                    _ => None,
+                })
                 .collect();
-            Event::AssistantText(texts)
+            Event::Assistant(blocks)
+        }
+        Some("user") if value["parent_tool_use_id"].is_null() => {
+            let results = content_blocks(&value)
+                .filter(|block| block["type"] == "tool_result")
+                .filter_map(|block| {
+                    let id = block["tool_use_id"].as_str()?.to_owned();
+                    let text = result_text(&block["content"]);
+                    let output = if block["is_error"].as_bool().unwrap_or(false) {
+                        format!("Error: {text}")
+                    } else {
+                        text
+                    };
+                    Some((id, output))
+                })
+                .collect();
+            Event::ToolResults(results)
         }
         Some("result") => Event::Result {
             is_error: value["is_error"].as_bool().unwrap_or(false),
         },
         _ => Event::Ignored,
+    }
+}
+
+fn content_blocks(line: &Value) -> impl Iterator<Item = &Value> {
+    line["message"]["content"].as_array().into_iter().flatten()
+}
+
+/// A tool result's content is a string, or an array of text blocks joined by newlines.
+fn result_text(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Tools whose most useful input is the path they touch.
+const FILE_TOOLS: [&str; 7] = [
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "Glob",
+    "Grep",
+];
+
+/// The one input that tells the most about a call: the command for Bash, the path for file
+/// tools, otherwise the whole input on one line.
+fn call_summary(name: &str, input: &Value) -> String {
+    let field = match name {
+        "Bash" => input["command"].as_str(),
+        _ if FILE_TOOLS.contains(&name) => input["file_path"]
+            .as_str()
+            .or_else(|| input["path"].as_str())
+            .or_else(|| input["pattern"].as_str()),
+        _ => None,
+    };
+    match field {
+        Some(field) => field.to_owned(),
+        None => compact_json(input),
+    }
+}
+
+/// `input` as one line of JSON with its keys sorted, so equal inputs read the same.
+fn compact_json(input: &Value) -> String {
+    fn sorted(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+                entries.sort_by_key(|(key, _)| key.as_str());
+                Value::Object(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key.clone(), sorted(value)))
+                        .collect::<Map<String, Value>>(),
+                )
+            }
+            Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+            other => other.clone(),
+        }
+    }
+    sorted(input).to_string()
+}
+
+/// The tool call item for a `tool_use` block, pending until its result arrives.
+fn tool_call(id: &str, name: &str, input: &Value) -> ToolCall {
+    ToolCall {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        summary: call_summary(name, input),
+        input: serde_json::to_string_pretty(input).unwrap_or_default(),
+        output: None,
     }
 }
 
@@ -60,11 +185,24 @@ pub fn updates_for(session: SessionId, event: &Event) -> Vec<SessionUpdate> {
             session,
             status: SessionStatus::Running,
         }],
-        Event::AssistantText(texts) => texts
+        Event::Assistant(blocks) => blocks
             .iter()
-            .map(|text| SessionUpdate::TranscriptItem {
+            .map(|block| SessionUpdate::TranscriptItem {
                 session,
-                item: TranscriptItem::Assistant(text.clone()),
+                item: match block {
+                    AssistantBlock::Text(text) => TranscriptItem::Assistant(text.clone()),
+                    AssistantBlock::ToolUse { id, name, input } => {
+                        TranscriptItem::ToolCall(tool_call(id, name, input))
+                    }
+                },
+            })
+            .collect(),
+        Event::ToolResults(results) => results
+            .iter()
+            .map(|(call_id, output)| SessionUpdate::ToolResult {
+                session,
+                call_id: call_id.clone(),
+                output: output.clone(),
             })
             .collect(),
         Event::Result { .. } => vec![SessionUpdate::Status {
@@ -83,7 +221,9 @@ pub fn map_line(session: SessionId, line: &str) -> Vec<SessionUpdate> {
 
 #[cfg(test)]
 mod tests {
-    use lodestar_core::session::{SessionId, SessionStatus, SessionUpdate, TranscriptItem};
+    use lodestar_core::session::{
+        SessionId, SessionStatus, SessionStore, SessionUpdate, ToolCall, TranscriptItem,
+    };
 
     use super::*;
 
@@ -142,32 +282,157 @@ mod tests {
         );
     }
 
+    fn tool_result(call_id: &str, output: &str) -> SessionUpdate {
+        SessionUpdate::ToolResult {
+            session: SessionId(7),
+            call_id: call_id.into(),
+            output: output.into(),
+        }
+    }
+
+    fn pending_call(update: &SessionUpdate) -> &ToolCall {
+        match update {
+            SessionUpdate::TranscriptItem {
+                item: TranscriptItem::ToolCall(call),
+                ..
+            } => {
+                assert!(call.is_pending(), "{call:?}");
+                call
+            }
+            other => panic!("not a tool call: {other:?}"),
+        }
+    }
+
     #[test]
-    fn tool_calls_and_their_results_are_ignored_for_now_and_the_reply_still_arrives() {
+    fn a_tool_call_arrives_pending_and_its_result_fills_it_in_by_id() {
+        let updates = mapped(TOOL_CALL);
+
+        assert_eq!(updates.len(), 7);
+        assert_eq!(updates[0], status(SessionStatus::Running));
+        let bash = pending_call(&updates[1]);
+        assert_eq!(bash.id, "toolu_019Q4LDyUZbxP95U1obMyzDr");
+        assert_eq!(bash.headline(), "Bash  echo hello");
+        assert!(bash.input.contains("\"command\": \"echo hello\""));
         assert_eq!(
-            mapped(TOOL_CALL),
-            [
-                status(SessionStatus::Running),
-                assistant(
-                    "`echo hello` printed \"hello\", and notes.txt says lodestar is a desktop app."
-                ),
-                status(SessionStatus::WaitingForInput),
-            ]
+            updates[2],
+            tool_result("toolu_019Q4LDyUZbxP95U1obMyzDr", "hello")
+        );
+        let read = pending_call(&updates[3]);
+        assert_eq!(read.id, "toolu_01NVrtf1eKfzsL3Y49cANcY1");
+        assert!(
+            read.headline().starts_with("Read  /tmp/"),
+            "{}",
+            read.headline()
+        );
+        assert!(read.headline().ends_with("\u{2026}"), "{}", read.headline());
+        assert_eq!(
+            updates[4],
+            tool_result(
+                "toolu_01NVrtf1eKfzsL3Y49cANcY1",
+                "1\tThe notes file says: lodestar is a desktop app.\n2\t"
+            )
+        );
+        assert_eq!(
+            updates[5],
+            assistant(
+                "`echo hello` printed \"hello\", and notes.txt says lodestar is a desktop app."
+            )
+        );
+        assert_eq!(updates[6], status(SessionStatus::WaitingForInput));
+    }
+
+    #[test]
+    fn a_result_that_arrives_after_more_text_still_fills_in_its_call() {
+        let lines: Vec<&str> = TOOL_CALL.lines().collect();
+        let (tool_use, tool_result, text) = (lines[1], lines[2], lines[7]);
+        let mut store = SessionStore::default();
+        let project = store.find_or_create_project("/tmp/play".into());
+        let session = store.create_session(project);
+
+        for line in [tool_use, text, tool_result] {
+            for update in map_line(session, line) {
+                store.apply(update);
+            }
+        }
+
+        let items = store.session(session).unwrap().transcript.items();
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            &items[0],
+            TranscriptItem::ToolCall(call) if call.output.as_deref() == Some("hello")
+        ));
+        assert!(matches!(&items[1], TranscriptItem::Assistant(_)));
+    }
+
+    #[test]
+    fn a_denied_tool_call_says_so_in_its_output_and_the_turn_still_ends_waiting() {
+        let updates = mapped(TOOL_DENIED);
+
+        assert_eq!(updates.len(), 6);
+        assert_eq!(updates[0], status(SessionStatus::Running));
+        let write = pending_call(&updates[1]);
+        assert_eq!(write.id, "toolu_01Si71DtiY9TMSP8Ppycbuif");
+        assert!(
+            write.headline().starts_with("Write  /tmp/"),
+            "{}",
+            write.headline()
+        );
+        assert!(matches!(
+            &updates[2],
+            SessionUpdate::ToolResult { call_id, output, .. }
+                if call_id == "toolu_01Si71DtiY9TMSP8Ppycbuif" && output.starts_with("Denied: Claude requested permissions")
+        ));
+        assert!(matches!(
+            &updates[3],
+            SessionUpdate::ToolResult { call_id, output, .. }
+                if call_id == "toolu_01Si71DtiY9TMSP8Ppycbuif" && output.starts_with("Error: Claude requested permissions")
+        ));
+        assert!(matches!(
+            &updates[4],
+            SessionUpdate::TranscriptItem { item: TranscriptItem::Assistant(text), .. }
+                if text.contains("denied")
+        ));
+        assert_eq!(updates[5], status(SessionStatus::WaitingForInput));
+    }
+
+    #[test]
+    fn a_tool_result_may_carry_its_text_as_blocks() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]}]},"parent_tool_use_id":null}"#;
+
+        assert_eq!(
+            map_line(SessionId(7), line),
+            [tool_result("toolu_x", "one\ntwo")]
         );
     }
 
     #[test]
-    fn a_denied_tool_call_is_ignored_too_and_the_turn_still_ends_waiting() {
-        let updates = mapped(TOOL_DENIED);
+    fn a_tool_without_a_known_headline_field_shows_its_input_compactly() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_y","name":"WebSearch","input":{"query":"gpui list","limit":3}}]},"parent_tool_use_id":null}"#;
 
-        assert_eq!(updates.len(), 3);
-        assert_eq!(updates[0], status(SessionStatus::Running));
-        assert!(matches!(
-            &updates[1],
-            SessionUpdate::TranscriptItem { item: TranscriptItem::Assistant(text), .. }
-                if text.contains("denied")
-        ));
-        assert_eq!(updates[2], status(SessionStatus::WaitingForInput));
+        let updates = map_line(SessionId(7), line);
+
+        assert_eq!(updates.len(), 1);
+        let call = pending_call(&updates[0]);
+        assert_eq!(
+            call.headline(),
+            r#"WebSearch  {"limit":3,"query":"gpui list"}"#
+        );
+    }
+
+    #[test]
+    fn file_tools_are_headlined_by_the_path_they_touch() {
+        for name in ["Read", "Write", "Edit", "Glob", "Grep"] {
+            let line = format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t","name":"{name}","input":{{"pattern":"x","file_path":"src/lib.rs","content":"..."}}}}]}},"parent_tool_use_id":null}}"#
+            );
+
+            let updates = map_line(SessionId(7), &line);
+
+            assert_eq!(
+                pending_call(&updates[0]).headline(),
+                format!("{name}  src/lib.rs")
+            );
+        }
     }
 
     #[test]
