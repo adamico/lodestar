@@ -49,9 +49,10 @@ pub enum Scroll {
 
 /// Keys that scroll the focused pane's Transcript.
 ///
-/// They are plain keys, so they stay out of the way of any focused text input.
+/// They are plain keys, so they stay out of the way of any focused text input and of a
+/// pending leader.
 pub fn bind_keys(cx: &mut App) {
-    const OUTSIDE_INPUTS: Option<&str> = Some("!Input");
+    const OUTSIDE_INPUTS: Option<&str> = Some("!Input && !leader");
     cx.bind_keys([
         KeyBinding::new("ctrl-u", ScrollHalfPageUp, OUTSIDE_INPUTS),
         KeyBinding::new("ctrl-d", ScrollHalfPageDown, OUTSIDE_INPUTS),
