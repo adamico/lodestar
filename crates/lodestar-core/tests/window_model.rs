@@ -693,3 +693,74 @@ mod resize_by_keyboard {
         assert_eq!(layout.panes[2].rect, Rect::new(541.0, 0.0, 460.0, 600.0));
     }
 }
+
+mod drag_divider {
+    use lodestar_core::geometry::{Point, Rect, Size};
+    use lodestar_core::window::{Direction, Refused, WindowModel};
+
+    /// Two launch panes of 500×600 each.
+    const AREA: Size = Size::new(1001.0, 600.0);
+
+    fn rects(model: &WindowModel) -> Vec<Rect> {
+        model.layout(AREA).panes.iter().map(|p| p.rect).collect()
+    }
+
+    #[test]
+    fn drag_the_divider_to_a_point_and_it_sits_there() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        model
+            .drag_divider(divider, Point::new(400.0, 123.0), AREA)
+            .expect("the divider exists");
+
+        assert_eq!(
+            rects(&model),
+            vec![
+                Rect::new(0.0, 0.0, 400.0, 600.0),
+                Rect::new(401.0, 0.0, 600.0, 600.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn drag_the_divider_past_the_minimum_and_it_stops_at_the_minimum() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        model
+            .drag_divider(divider, Point::new(50.0, 0.0), AREA)
+            .expect("the divider exists");
+
+        assert_eq!(rects(&model)[0].width, 320.0);
+    }
+
+    #[test]
+    fn drag_a_horizontal_divider_and_only_its_vertical_position_matters() {
+        let mut model = WindowModel::new();
+        let left = model.focused_pane();
+        model.split(left, Direction::Down, AREA).expect("fits");
+        let divider = model.layout(AREA).dividers[0].id;
+
+        model
+            .drag_divider(divider, Point::new(900.0, 250.0), AREA)
+            .expect("the divider exists");
+
+        let layout = model.layout(AREA);
+        assert_eq!(layout.panes[0].rect, Rect::new(0.0, 0.0, 500.0, 250.0));
+        assert_eq!(layout.panes[1].rect, Rect::new(0.0, 251.0, 500.0, 349.0));
+    }
+
+    #[test]
+    fn drag_a_divider_that_no_longer_exists_and_it_is_refused() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (divider, right) = (layout.dividers[0].id, layout.panes[1].pane);
+        model.close(right);
+
+        assert_eq!(
+            model.drag_divider(divider, Point::new(400.0, 0.0), AREA),
+            Err(Refused::NoSuchDivider)
+        );
+    }
+}

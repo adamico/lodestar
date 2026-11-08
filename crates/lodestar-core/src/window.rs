@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::geometry::{Rect, Size};
+use crate::geometry::{Point, Rect, Size};
 use crate::session::SessionId;
 
 /// Width of the gap between two panes, in logical pixels.
@@ -391,6 +391,30 @@ impl WindowModel {
             ratio - delta
         };
         self.set_ratio(divider, new_ratio, area)
+    }
+
+    /// Move `divider` to `position` in the pane area, as a mouse drag does: a vertical divider
+    /// follows the x coordinate, a horizontal one the y. It stops at the minimum pane size
+    /// instead of being refused. Refused only if the divider no longer exists.
+    pub fn drag_divider(
+        &mut self,
+        divider: DividerId,
+        position: Point,
+        area: Size,
+    ) -> Result<(), Refused> {
+        let (rect, split) = self
+            .rect_of_split(divider, area)
+            .zip(self.root.split(divider))
+            .ok_or(Refused::NoSuchDivider)?;
+        let Node::Split { axis, .. } = split else {
+            unreachable!("split returns a split");
+        };
+        let desired = match axis {
+            Axis::Horizontal => (position.x - rect.x) / (rect.width - DIVIDER_THICKNESS),
+            Axis::Vertical => (position.y - rect.y) / (rect.height - DIVIDER_THICKNESS),
+        };
+        let ratio = self.clamped_ratio(divider, desired, area);
+        self.set_ratio(divider, ratio, area)
     }
 
     /// The ratio nearest to `desired` that [`Self::set_ratio`] would accept for `divider`: a
