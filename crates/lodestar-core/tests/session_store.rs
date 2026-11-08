@@ -233,3 +233,30 @@ mod picker {
         );
     }
 }
+
+mod picker_filter {
+    use std::path::PathBuf;
+
+    use super::new_sessions::Fixtures;
+    use lodestar_core::picker::{PickerEntry, PickerList};
+    use lodestar_core::session::{SessionId, SessionStore};
+    use lodestar_core::window::WindowModel;
+
+    #[test]
+    fn typing_filters_sessions_by_title_and_folders_by_path_ignoring_case() {
+        let store = SessionStore::load(&mut Fixtures);
+        let model = WindowModel::new();
+
+        let list = PickerList::new(&store, &model, "DOT");
+
+        assert_eq!(
+            list.entries(),
+            vec![
+                PickerEntry::Folder(PathBuf::from("/home/me/dotfiles")),
+                PickerEntry::Browse,
+            ]
+        );
+        let list = PickerList::new(&store, &model, "ci");
+        assert_eq!(list.sessions(), [SessionId(1)]);
+    }
+}

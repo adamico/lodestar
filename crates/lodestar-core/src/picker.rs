@@ -24,16 +24,25 @@ pub struct PickerList {
 }
 
 impl PickerList {
-    /// The sessions no pane shows, newest first, and the recent folders.
-    pub fn new(store: &SessionStore, model: &WindowModel, _filter: &str) -> Self {
+    /// The sessions no pane shows, newest first, and the recent folders, keeping only those
+    /// whose title or path contains `filter` (ignoring case).
+    pub fn new(store: &SessionStore, model: &WindowModel, filter: &str) -> Self {
+        let filter = filter.to_lowercase();
+        let matches = |text: &str| text.to_lowercase().contains(&filter);
         let all: Vec<SessionId> = store
             .sessions_newest_first()
             .iter()
+            .filter(|session| matches(&session.title))
             .map(|session| session.id)
             .collect();
         Self {
             sessions: model.not_shown(&all),
-            folders: store.recent_folders().to_vec(),
+            folders: store
+                .recent_folders()
+                .iter()
+                .filter(|folder| matches(&folder.to_string_lossy()))
+                .cloned()
+                .collect(),
         }
     }
 
