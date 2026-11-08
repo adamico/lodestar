@@ -60,6 +60,21 @@ impl AgentExit {
             stderr: stderr.trim().to_owned(),
         }
     }
+
+    /// Words for the user about how `program` ended and, when it said anything on stderr,
+    /// what.
+    pub fn describe(&self, program: &str) -> String {
+        let mut message = match (self.code, self.signal) {
+            (Some(code), _) => format!("{program} exited (code {code})."),
+            (None, Some(signal)) => format!("{program} was killed (signal {signal})."),
+            (None, None) => format!("{program} exited."),
+        };
+        if !self.stderr.is_empty() {
+            message.push('\n');
+            message.push_str(&self.stderr);
+        }
+        message
+    }
 }
 
 /// What the reader threads send down the one channel.

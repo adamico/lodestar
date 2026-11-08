@@ -10,7 +10,7 @@ use std::time::Duration;
 use lodestar_core::session::{InitialSessions, Project, SessionId, SessionSource, SessionUpdate};
 
 use self::mapper::Event;
-use self::process::{Agent, AgentEvent, AgentExit};
+use self::process::{Agent, AgentEvent};
 
 pub mod mapper;
 pub mod process;
@@ -66,26 +66,10 @@ impl ClaudeSource {
                 self.agents.remove(&session);
                 vec![SessionUpdate::Ended {
                     session,
-                    error: self.exit_message(&exit),
+                    error: exit.describe(&self.program_name()),
                 }]
             }
         }
-    }
-
-    /// Words for the user about an Agent that is gone: how it ended and, when it said
-    /// anything on stderr, what.
-    fn exit_message(&self, exit: &AgentExit) -> String {
-        let program = self.program_name();
-        let mut message = match (exit.code, exit.signal) {
-            (Some(code), _) => format!("{program} exited (code {code})."),
-            (None, Some(signal)) => format!("{program} was killed (signal {signal})."),
-            (None, None) => format!("{program} exited."),
-        };
-        if !exit.stderr.is_empty() {
-            message.push('\n');
-            message.push_str(&exit.stderr);
-        }
-        message
     }
 }
 
