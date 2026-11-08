@@ -23,7 +23,7 @@ use crate::leader::{
 };
 use crate::sidebar_view::SidebarState;
 
-use crate::transcript_view::{self, Scroll, TranscriptViews};
+use crate::transcript_view::{self, Scroll, TRANSCRIPT_FLAG, TranscriptViews};
 
 const PANE_HEADER_HEIGHT: Pixels = px(30.);
 /// Lodestar's one accent colour: marks the focused pane.
@@ -141,11 +141,25 @@ impl MainWindow {
         let mut context = KeyContext::default();
         context.add(WINDOW_CONTEXT);
         match self.mode {
-            Mode::Normal => {}
+            Mode::Normal => {
+                if self.focused_pane_scrolls() {
+                    context.add(TRANSCRIPT_FLAG);
+                }
+            }
             Mode::Leader => context.add(LEADER_FLAG),
             Mode::Resize => context.add(RESIZE_FLAG),
         }
         context
+    }
+
+    /// Whether plain keys scroll the focused pane's Transcript: only when the pane shows a
+    /// session and the sidebar does not have the keyboard.
+    fn focused_pane_scrolls(&self) -> bool {
+        !self.sidebar.is_focused()
+            && self
+                .window_model
+                .session_in(self.window_model.focused_pane())
+                .is_some()
     }
 
     fn on_leader(&mut self, _: &Leader, _: &mut Window, cx: &mut Context<Self>) {

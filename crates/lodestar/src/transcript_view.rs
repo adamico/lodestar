@@ -48,17 +48,23 @@ pub enum Scroll {
     Bottom,
 }
 
+/// Set on the window's key context only while the focused pane shows a Transcript that
+/// plain keys may scroll: normal mode, sidebar not focused, pane not empty. Without it the
+/// scroll keys stay unbound, so GPUI hands them on to the window's key-down listener, where
+/// an empty pane's picker and the sidebar read them.
+pub const TRANSCRIPT_FLAG: &str = "transcript";
+
 /// Keys that scroll the focused pane's Transcript.
 ///
-/// They are plain keys, so they stay out of the way of any focused text input and of a
-/// pending leader.
+/// They are plain keys, so they are bound only under [`TRANSCRIPT_FLAG`] and outside any
+/// focused text input.
 pub fn bind_keys(cx: &mut App) {
-    const OUTSIDE_INPUTS: Option<&str> = Some("!Input && !leader");
+    const CONTEXT: Option<&str> = Some("MainWindow && transcript && !Input");
     cx.bind_keys([
-        KeyBinding::new("ctrl-u", ScrollHalfPageUp, OUTSIDE_INPUTS),
-        KeyBinding::new("ctrl-d", ScrollHalfPageDown, OUTSIDE_INPUTS),
-        KeyBinding::new("g", ScrollToTop, OUTSIDE_INPUTS),
-        KeyBinding::new("shift-g", ScrollToBottom, OUTSIDE_INPUTS),
+        KeyBinding::new("ctrl-u", ScrollHalfPageUp, CONTEXT),
+        KeyBinding::new("ctrl-d", ScrollHalfPageDown, CONTEXT),
+        KeyBinding::new("g", ScrollToTop, CONTEXT),
+        KeyBinding::new("shift-g", ScrollToBottom, CONTEXT),
     ]);
 }
 
