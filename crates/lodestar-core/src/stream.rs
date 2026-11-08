@@ -1,6 +1,6 @@
 //! Session updates that arrive over time.
 //!
-//! A source that plays updates back on a clock (recorded sessions, replays, fixtures) needs
+//! A source that plays updates back on a clock (recorded sessions, replays) needs
 //! the same small rule: release each update once, when its time has come, in time order.
 //! That rule lives here, free of timers, so it is testable with plain `Duration`s.
 
