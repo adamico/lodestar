@@ -106,3 +106,23 @@ mod naming {
         assert_eq!(store.session(first_in_dotfiles).unwrap().title, "dotfiles #1");
     }
 }
+
+mod ordering {
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{ProjectId, SessionId, SessionStore};
+
+    #[test]
+    fn a_new_session_is_the_newest_of_all() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        let created = store.create_session(ProjectId(1));
+
+        let ids: Vec<SessionId> = store
+            .sessions_newest_first()
+            .iter()
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(ids, vec![created, SessionId(0), SessionId(1)]);
+        assert_eq!(store.sessions_in(ProjectId(1))[0].id, created);
+    }
+}

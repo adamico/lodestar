@@ -100,6 +100,13 @@ impl SessionStore {
         sessions
     }
 
+    /// Every session, newest first.
+    pub fn sessions_newest_first(&self) -> Vec<&Session> {
+        let mut sessions: Vec<&Session> = self.sessions.iter().collect();
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.started_at));
+        sessions
+    }
+
     pub fn project(&self, id: ProjectId) -> Option<&Project> {
         self.projects.iter().find(|project| project.id == id)
     }
@@ -121,12 +128,18 @@ impl SessionStore {
                 .max()
                 .unwrap_or(0),
         );
+        let started_at = self
+            .sessions
+            .iter()
+            .map(|session| session.started_at + 1)
+            .max()
+            .unwrap_or(0);
         self.sessions.push(Session {
             id,
             title,
             project,
             status: SessionStatus::WaitingForInput,
-            started_at: 0,
+            started_at,
             transcript: Transcript::default(),
         });
         id
