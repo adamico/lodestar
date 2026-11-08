@@ -195,3 +195,102 @@ fn each_split_adds_exactly_one_pane_and_the_halves_tile_the_old_rect() {
     assert_eq!(halves[1].height, 299.5);
     assert_eq!(halves[1].x + halves[1].width, old.x + old.width);
 }
+
+#[test]
+fn close_a_pane_and_its_sibling_takes_the_space() {
+    let mut model = WindowModel::new();
+    let layout = model.layout(TALL_AREA);
+    let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+
+    model.close(right);
+
+    let layout = model.layout(TALL_AREA);
+    assert_eq!(
+        layout.panes,
+        vec![PaneLayout {
+            pane: left,
+            rect: Rect::new(0.0, 0.0, 1001.0, 600.0)
+        }]
+    );
+    assert_eq!(layout.dividers, vec![]);
+}
+
+#[test]
+fn close_the_focused_pane_and_focus_moves_to_its_sibling() {
+    let mut model = WindowModel::new();
+    let layout = model.layout(TALL_AREA);
+    let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+    model.focus(right);
+
+    model.close(right);
+
+    assert_eq!(model.focused_pane(), left);
+}
+
+#[test]
+fn close_an_unfocused_pane_and_focus_stays_put() {
+    let mut model = WindowModel::new();
+    let layout = model.layout(TALL_AREA);
+    let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+
+    model.close(right);
+
+    assert_eq!(model.focused_pane(), left);
+}
+
+#[test]
+fn close_a_nested_pane_and_only_its_sibling_grows() {
+    let mut model = WindowModel::new();
+    let layout = model.layout(WIDE_AREA);
+    let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+    let bottom_right = model
+        .split(right, Direction::Down, WIDE_AREA)
+        .expect("fits");
+
+    model.close(right);
+
+    let layout = model.layout(WIDE_AREA);
+    assert_eq!(
+        layout.panes,
+        vec![
+            PaneLayout {
+                pane: left,
+                rect: Rect::new(0.0, 0.0, 800.0, 600.0)
+            },
+            PaneLayout {
+                pane: bottom_right,
+                rect: Rect::new(801.0, 0.0, 800.0, 600.0)
+            },
+        ]
+    );
+}
+
+#[test]
+fn close_the_last_pane_and_one_new_empty_pane_remains() {
+    let mut model = WindowModel::new();
+    let layout = model.layout(TALL_AREA);
+    let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+    model.close(right);
+
+    model.close(left);
+
+    let layout = model.layout(TALL_AREA);
+    assert_eq!(layout.panes.len(), 1);
+    let remaining = layout.panes[0].pane;
+    assert_ne!(remaining, left);
+    assert_eq!(layout.panes[0].rect, Rect::new(0.0, 0.0, 1001.0, 600.0));
+    assert_eq!(model.session_in(remaining), None);
+    assert_eq!(model.focused_pane(), remaining);
+}
+
+#[test]
+fn close_a_pane_that_no_longer_exists_and_nothing_changes() {
+    let mut model = WindowModel::new();
+    let right = model.layout(TALL_AREA).panes[1].pane;
+    model.close(right);
+    let before = rects(&model, TALL_AREA);
+
+    model.close(right);
+
+    assert_eq!(rects(&model, TALL_AREA), before);
+}

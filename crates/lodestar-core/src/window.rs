@@ -237,6 +237,25 @@ impl WindowModel {
         Ok(new_pane)
     }
 
+    /// Close `pane`: its sibling takes its space. The session it showed is only hidden, never
+    /// ended. Closing the last pane leaves one new empty pane. A pane that no longer exists is
+    /// ignored.
+    pub fn close(&mut self, pane: PaneId) {
+        if self.panes.remove(&pane).is_none() {
+            return;
+        }
+        if self.panes.is_empty() {
+            let fresh = self.new_pane();
+            self.root = Node::Pane(fresh);
+            self.focused = fresh;
+            return;
+        }
+        self.root.remove_leaf(pane);
+        if self.focused == pane {
+            self.focused = self.root.first_pane();
+        }
+    }
+
     fn rect_of(&self, pane: PaneId, area: Size) -> Option<Rect> {
         self.layout(area)
             .panes
@@ -272,6 +291,32 @@ impl Node {
                 first.split_leaf(pane, new_pane, axis, new_first);
                 second.split_leaf(pane, new_pane, axis, new_first);
             }
+        }
+    }
+}
+
+impl Node {
+    /// Remove the leaf `pane`, its sibling taking the parent's place. Does nothing when `pane` is
+    /// the root or absent.
+    fn remove_leaf(&mut self, pane: PaneId) {
+        let Node::Split { first, second, .. } = self else {
+            return;
+        };
+        if matches!(**first, Node::Pane(id) if id == pane) {
+            *self = std::mem::replace(second, Node::Pane(pane));
+        } else if matches!(**second, Node::Pane(id) if id == pane) {
+            *self = std::mem::replace(first, Node::Pane(pane));
+        } else {
+            first.remove_leaf(pane);
+            second.remove_leaf(pane);
+        }
+    }
+
+    /// The leftmost, topmost pane under this node.
+    fn first_pane(&self) -> PaneId {
+        match self {
+            Node::Pane(pane) => *pane,
+            Node::Split { first, .. } => first.first_pane(),
         }
     }
 }
