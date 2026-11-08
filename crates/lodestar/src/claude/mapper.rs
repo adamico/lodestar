@@ -187,7 +187,10 @@ mod tests {
         assert_eq!(map_line(SessionId(7), ""), []);
         assert_eq!(map_line(SessionId(7), "not json at all"), []);
         assert_eq!(map_line(SessionId(7), r#"{"type":"bogus"}"#), []);
-        assert_eq!(map_line(SessionId(7), r#"{"type":"system","subtype":"init"}"#), []);
+        assert_eq!(
+            map_line(SessionId(7), r#"{"type":"system","subtype":"init"}"#),
+            []
+        );
         assert_eq!(map_line(SessionId(7), r#"{"type":"assistant"}"#), []);
         assert_eq!(map_line(SessionId(7), "[1, 2]"), []);
     }

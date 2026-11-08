@@ -394,7 +394,11 @@ fn render_tool_call(
                 .border_t_1()
                 .border_color(theme.border)
                 .child(monospace_block("Input", &call.input, cx))
-                .child(monospace_block("Output", &call.output, cx)),
+                .child(monospace_block(
+                    "Output",
+                    call.output.as_deref().unwrap_or(""),
+                    cx,
+                )),
         )
 }
 
