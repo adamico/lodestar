@@ -39,6 +39,8 @@ pub enum LeaderCommand {
     SplitRight,
     SplitDown,
     ClosePane,
+    FocusSidebar,
+    ToggleSidebar,
 }
 
 impl LeaderCommand {
@@ -48,6 +50,8 @@ impl LeaderCommand {
         ("s", "split right", LeaderCommand::SplitRight),
         ("v", "split down", LeaderCommand::SplitDown),
         ("x", "close pane", LeaderCommand::ClosePane),
+        ("b", "focus sidebar", LeaderCommand::FocusSidebar),
+        ("B", "toggle sidebar", LeaderCommand::ToggleSidebar),
     ];
 
     /// The command for a keystroke pressed after the leader, if it is one.
@@ -61,6 +65,8 @@ impl LeaderCommand {
             ("s", false) => Some(Self::SplitRight),
             ("v", false) => Some(Self::SplitDown),
             ("x", false) => Some(Self::ClosePane),
+            ("b", false) => Some(Self::FocusSidebar),
+            ("b", true) => Some(Self::ToggleSidebar),
             _ => None,
         }
     }
