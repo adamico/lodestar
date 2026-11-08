@@ -38,13 +38,9 @@ impl MainWindow {
 
         // Keys reach the filter through the window's key listener, not a text input, so the
         // line draws its own caret, and only where typing would land.
-        let caret = self.picker_takes_keys(pane).then(|| {
-            div()
-                .flex_none()
-                .w(px(1.5))
-                .h(rems(1.))
-                .bg(theme.caret)
-        });
+        let caret = self
+            .picker_takes_keys(pane)
+            .then(|| div().flex_none().w(px(1.5)).h(rems(1.)).bg(theme.caret));
         let filter_line = h_flex()
             .px_2()
             .py_1()
@@ -59,9 +55,7 @@ impl MainWindow {
                         .child(FILTER_PLACEHOLDER),
                 )
             } else {
-                h_flex()
-                    .child(state.filter().to_string())
-                    .children(caret)
+                h_flex().child(state.filter().to_string()).children(caret)
             });
 
         let mut rows = v_flex().flex_1().overflow_hidden().py_1();
