@@ -4,11 +4,23 @@ use lodestar_core::session::{ToolCall, Transcript, TranscriptItem};
 
 fn tool_call(summary: &str) -> ToolCall {
     ToolCall {
+        id: "toolu_1".into(),
         name: "Bash".into(),
         summary: summary.into(),
         input: "cargo test".into(),
-        output: "4 passed".into(),
+        output: Some("4 passed".into()),
     }
+}
+
+#[test]
+fn a_tool_call_is_pending_until_its_output_arrives() {
+    let pending = ToolCall {
+        output: None,
+        ..tool_call("cargo test")
+    };
+
+    assert!(pending.is_pending());
+    assert!(!tool_call("cargo test").is_pending());
 }
 
 #[test]
