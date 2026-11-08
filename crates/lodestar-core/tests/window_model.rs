@@ -1,5 +1,5 @@
 use lodestar_core::geometry::{Rect, Size};
-use lodestar_core::window::{DIVIDER_THICKNESS, PaneLayout, WindowModel};
+use lodestar_core::window::{DIVIDER_THICKNESS, Direction, PaneLayout, Refused, WindowModel};
 
 #[test]
 fn launch_shows_two_empty_panes_side_by_side() {
@@ -83,4 +83,115 @@ fn split_a_wide_pane_puts_a_new_empty_focused_pane_on_its_right() {
     assert_eq!(layout.panes.len(), 3);
     assert_eq!(model.focused_pane(), new_pane);
     assert_eq!(model.session_in(new_pane), None);
+}
+
+#[test]
+fn split_a_tall_pane_puts_the_new_pane_below_it() {
+    let mut model = WindowModel::new();
+    let left = model.focused_pane();
+
+    let new_pane = model.split_auto(left, TALL_AREA).expect("the halves fit");
+
+    let layout = model.layout(TALL_AREA);
+    assert_eq!(layout.panes[0].rect, Rect::new(0.0, 0.0, 500.0, 299.5));
+    assert_eq!(
+        layout.panes[1],
+        PaneLayout {
+            pane: new_pane,
+            rect: Rect::new(0.0, 300.5, 500.0, 299.5)
+        }
+    );
+}
+
+#[test]
+fn split_right_forces_a_tall_pane_to_split_side_by_side() {
+    let mut model = WindowModel::new();
+    // Tall panes of 800×1000: an automatic split would go down.
+    let area = Size::new(1601.0, 1000.0);
+    let left = model.focused_pane();
+
+    let new_pane = model
+        .split(left, Direction::Right, area)
+        .expect("the halves fit");
+
+    let layout = model.layout(area);
+    assert_eq!(layout.panes[0].rect, Rect::new(0.0, 0.0, 399.5, 1000.0));
+    assert_eq!(
+        layout.panes[1],
+        PaneLayout {
+            pane: new_pane,
+            rect: Rect::new(400.5, 0.0, 399.5, 1000.0)
+        }
+    );
+}
+
+#[test]
+fn split_down_forces_a_wide_pane_to_split_top_and_bottom() {
+    let mut model = WindowModel::new();
+    let left = model.focused_pane();
+
+    let new_pane = model
+        .split(left, Direction::Down, WIDE_AREA)
+        .expect("the halves fit");
+
+    let layout = model.layout(WIDE_AREA);
+    assert_eq!(layout.panes[0].rect, Rect::new(0.0, 0.0, 800.0, 299.5));
+    assert_eq!(
+        layout.panes[1],
+        PaneLayout {
+            pane: new_pane,
+            rect: Rect::new(0.0, 300.5, 800.0, 299.5)
+        }
+    );
+}
+
+#[test]
+fn split_that_would_make_a_half_too_narrow_is_refused_and_changes_nothing() {
+    let mut model = WindowModel::new();
+    let left = model.focused_pane();
+    let before = rects(&model, TALL_AREA);
+
+    let result = model.split(left, Direction::Right, TALL_AREA);
+
+    assert_eq!(result, Err(Refused::BelowMinimumSize));
+    assert_eq!(rects(&model, TALL_AREA), before);
+    assert_eq!(model.focused_pane(), left);
+}
+
+#[test]
+fn split_that_would_make_a_half_too_short_is_refused() {
+    let mut model = WindowModel::new();
+    // Panes of 800×399: halving the height leaves 199, just under the minimum.
+    let area = Size::new(1601.0, 399.0);
+    let left = model.focused_pane();
+
+    let result = model.split(left, Direction::Down, area);
+
+    assert_eq!(result, Err(Refused::BelowMinimumSize));
+}
+
+#[test]
+fn each_split_adds_exactly_one_pane_and_the_halves_tile_the_old_rect() {
+    let mut model = WindowModel::new();
+    let left = model.focused_pane();
+    let old = rects(&model, WIDE_AREA)[0];
+
+    let new_pane = model.split_auto(left, WIDE_AREA).expect("the halves fit");
+    let new_pane = model
+        .split_auto(new_pane, WIDE_AREA)
+        .expect("the halves fit");
+
+    let layout = model.layout(WIDE_AREA);
+    assert_eq!(layout.panes.len(), 4);
+    let halves: Vec<Rect> = layout
+        .panes
+        .iter()
+        .filter(|p| p.pane == left || p.pane == new_pane)
+        .map(|p| p.rect)
+        .collect();
+    assert_eq!(halves[0].x, old.x);
+    assert_eq!(halves[0].width, 399.5);
+    assert_eq!(halves[1].y, 300.5);
+    assert_eq!(halves[1].height, 299.5);
+    assert_eq!(halves[1].x + halves[1].width, old.x + old.width);
 }
