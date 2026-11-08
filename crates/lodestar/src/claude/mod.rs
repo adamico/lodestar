@@ -131,14 +131,14 @@ impl SessionSource for ClaudeSource {
             ));
         }
         let agent = Agent::spawn(&self.program, &project.path, session).map_err(|error| {
-            let reason = match error.kind() {
-                std::io::ErrorKind::NotFound => "not found on PATH".to_owned(),
-                _ => error.to_string(),
-            };
-            format!(
-                "Couldn't start {}: {reason}. Install Claude Code or set {CLAUDE_BIN_VAR}.",
-                self.program_name()
-            )
+            let program = self.program_name();
+            match error.kind() {
+                std::io::ErrorKind::NotFound => format!(
+                    "Couldn't start {program}: not found on PATH. \
+                     Install Claude Code or set {CLAUDE_BIN_VAR}."
+                ),
+                _ => format!("Couldn't start {program}: {error}."),
+            }
         })?;
         self.agents.insert(session, agent);
         Ok(())
@@ -452,6 +452,19 @@ mod tests {
             started.unwrap_err(),
             "Couldn't start lodestar-no-such-claude-binary: not found on PATH. \
              Install Claude Code or set LODESTAR_CLAUDE_BIN."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_binary_that_cannot_run_is_reported_without_the_install_hint() {
+        let mut source = ClaudeSource::new(RECORDING.into());
+
+        let started = source.start_agent(SessionId(3), &project_in(std::env::temp_dir()));
+
+        assert_eq!(
+            started.unwrap_err(),
+            "Couldn't start text-only.jsonl: Permission denied (os error 13)."
         );
     }
 }
