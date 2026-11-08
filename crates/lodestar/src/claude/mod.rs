@@ -313,6 +313,64 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_killed_from_outside_ends_the_session_naming_the_signal() {
+        let program = fake_claude_doing("killed", "kill -KILL $$\n");
+        let mut source = ClaudeSource::new(program.into());
+
+        source.start_agent(SessionId(3), &tmp_project()).unwrap();
+        let updates = poll_until_done(&mut source);
+
+        assert_eq!(
+            updates,
+            [
+                SessionUpdate::TranscriptItem {
+                    session: SessionId(3),
+                    item: TranscriptItem::Error("claude was killed (signal 9).".into()),
+                },
+                SessionUpdate::Status {
+                    session: SessionId(3),
+                    status: SessionStatus::Done
+                },
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lines_that_are_not_json_are_skipped_and_the_turn_still_arrives() {
+        let program = fake_claude_doing(
+            "garbage",
+            &format!(
+                "echo 'not json at all'\necho '{{\"type\": 42}}'\ncat '{RECORDING}'\ncat > /dev/null\n"
+            ),
+        );
+        let mut source = ClaudeSource::new(program.into());
+
+        source.start_agent(SessionId(3), &tmp_project()).unwrap();
+        let updates = poll_until_waiting(&mut source);
+
+        assert_eq!(
+            updates,
+            [
+                SessionUpdate::Status {
+                    session: SessionId(3),
+                    status: SessionStatus::Running
+                },
+                SessionUpdate::TranscriptItem {
+                    session: SessionId(3),
+                    item: TranscriptItem::Assistant("pong".into())
+                },
+                SessionUpdate::Status {
+                    session: SessionId(3),
+                    status: SessionStatus::WaitingForInput
+                },
+            ]
+        );
+        assert!(source.poll_updates(Duration::ZERO).is_empty());
+    }
+
     #[test]
     fn an_agent_cannot_start_in_a_folder_that_does_not_exist() {
         let project = Project {
