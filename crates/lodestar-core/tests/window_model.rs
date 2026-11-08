@@ -59,6 +59,26 @@ fn rects(model: &WindowModel, area: Size) -> Vec<Rect> {
     model.layout(area).panes.iter().map(|p| p.rect).collect()
 }
 
+/// Every session appears in at most one pane, judged only through what the model reports.
+fn assert_one_pane_per_session(model: &WindowModel, area: Size) {
+    for session in model.sessions_shown() {
+        let panes_showing = model
+            .layout(area)
+            .panes
+            .iter()
+            .filter(|pane| model.session_in(pane.pane) == Some(session))
+            .count();
+        assert_eq!(
+            panes_showing, 1,
+            "{session:?} is shown in {panes_showing} panes"
+        );
+        assert_eq!(
+            model.pane_showing(session).map(|p| model.session_in(p)),
+            Some(Some(session))
+        );
+    }
+}
+
 #[test]
 fn split_a_wide_pane_puts_a_new_empty_focused_pane_on_its_right() {
     let mut model = WindowModel::new();
@@ -404,51 +424,80 @@ mod open_session {
         assert_eq!(model.focused_pane(), left);
         assert_eq!(model.sessions_shown(), vec![SessionId(1)]);
     }
+}
 
-    type Command = Box<dyn Fn(&mut WindowModel)>;
+mod one_pane_per_session {
+    use super::*;
+    use lodestar_core::window::DropZone;
 
-    /// Every session appears in at most one pane, judged only through what the model reports.
-    fn assert_one_pane_per_session(model: &WindowModel) {
-        for session in model.sessions_shown() {
-            let panes_showing = panes(model)
-                .into_iter()
-                .filter(|pane| model.session_in(*pane) == Some(session))
-                .count();
-            assert_eq!(
-                panes_showing, 1,
-                "{session:?} is shown in {panes_showing} panes"
-            );
-            assert_eq!(
-                model.pane_showing(session).map(|p| model.session_in(p)),
-                Some(Some(session))
-            );
-        }
-    }
+    /// The launch panes are 800×600 each.
+    const AREA: Size = Size::new(1601.0, 600.0);
 
     #[test]
     fn a_session_is_in_at_most_one_pane_after_every_command() {
         let mut model = WindowModel::new();
-        let [left, right] = panes(&model)[..] else {
-            unreachable!()
-        };
-        let commands: Vec<Command> = vec![
-            Box::new(move |m| m.open_session(SessionId(1), left)),
-            Box::new(move |m| m.focus(right)),
-            Box::new(move |m| m.open_session(SessionId(2), right)),
-            Box::new(move |m| m.open_session(SessionId(1), right)),
-            Box::new(move |m| m.open_session(SessionId(2), left)),
-            Box::new(move |m| m.open_session(SessionId(3), left)),
-            Box::new(move |m| m.open_session(SessionId(2), left)),
-            Box::new(move |m| m.open_session(SessionId(3), right)),
-            Box::new(move |m| m.focus(left)),
-            Box::new(move |m| m.open_session(SessionId(3), left)),
-        ];
+        let layout = model.layout(AREA);
+        let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+        let check = |model: &WindowModel| assert_one_pane_per_session(model, AREA);
+        check(&model);
 
-        assert_one_pane_per_session(&model);
-        for command in commands {
-            command(&mut model);
-            assert_one_pane_per_session(&model);
-        }
+        model.open_session(SessionId(1), left);
+        check(&model);
+        model.open_session(SessionId(2), right);
+        check(&model);
+        model.open_session(SessionId(1), right);
+        check(&model);
+
+        let far_right = model.split_auto(right, AREA).expect("wide enough");
+        check(&model);
+        model.open_session(SessionId(3), far_right);
+        check(&model);
+        let bottom_left = model
+            .split(left, Direction::Down, AREA)
+            .expect("tall enough");
+        check(&model);
+        model.open_session(SessionId(4), bottom_left);
+        check(&model);
+
+        model.swap(left, far_right);
+        check(&model);
+        model.focus(far_right);
+        assert!(model.swap_in_direction(Direction::Right, AREA));
+        check(&model);
+        model
+            .resize_in_direction(Direction::Left, 40.0, AREA)
+            .expect("the neighbour has room");
+        check(&model);
+
+        model
+            .drop_session(SessionId(1), bottom_left, DropZone::Middle, AREA)
+            .unwrap();
+        check(&model);
+        model
+            .drop_session(SessionId(2), far_right, DropZone::Edge(Direction::Up), AREA)
+            .unwrap();
+        check(&model);
+        model
+            .drop_session(SessionId(5), right, DropZone::Middle, AREA)
+            .unwrap();
+        check(&model);
+        model
+            .drop_session(SessionId(4), right, DropZone::Middle, AREA)
+            .unwrap();
+        check(&model);
+        model
+            .drop_session(SessionId(4), right, DropZone::Edge(Direction::Right), AREA)
+            .unwrap();
+        check(&model);
+
+        model.open_session(SessionId(3), left);
+        check(&model);
+        model.close(right);
+        check(&model);
+        model.close(model.focused_pane());
+        check(&model);
+        model.open_session(SessionId(2), left);
+        check(&model);
     }
 }
 
@@ -1200,8 +1249,7 @@ mod drop_session {
     }
 
     #[test]
-    fn drop_a_session_on_an_edge_of_its_own_pane_splits_it_and_moves_the_session_to_the_new_half()
-     {
+    fn drop_a_session_on_an_edge_of_its_own_pane_splits_it_and_moves_the_session_to_the_new_half() {
         let mut model = WindowModel::new();
         let layout = model.layout(AREA);
         let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
@@ -1219,7 +1267,10 @@ mod drop_session {
             "the session is in the new bottom half"
         );
         assert_eq!(rect_of(&model, left), Rect::new(0.0, 0.0, 800.0, 299.5));
-        assert_eq!(model.focused_pane(), model.pane_showing(SessionId(1)).unwrap());
+        assert_eq!(
+            model.focused_pane(),
+            model.pane_showing(SessionId(1)).unwrap()
+        );
         assert_eq!(model.layout(AREA).panes.len(), 3);
     }
 
@@ -1241,16 +1292,7 @@ mod drop_session {
         for (session, pane, zone) in drops {
             model.drop_session(session, pane, zone, AREA).unwrap();
 
-            let layout = model.layout(AREA);
-            let mut shown: Vec<SessionId> = layout
-                .panes
-                .iter()
-                .filter_map(|p| model.session_in(p.pane))
-                .collect();
-            let count = shown.len();
-            shown.sort();
-            shown.dedup();
-            assert_eq!(shown.len(), count, "a session appears in two panes");
+            assert_one_pane_per_session(&model, AREA);
         }
     }
 

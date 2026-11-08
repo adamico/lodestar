@@ -798,9 +798,7 @@ impl Node {
         } else if matches!(**second, Node::Pane(id) if id == pane) {
             *self = std::mem::replace(first, Node::Pane(pane));
         } else {
-            return first
-                .remove_leaf(pane)
-                .or_else(|| second.remove_leaf(pane));
+            return first.remove_leaf(pane).or_else(|| second.remove_leaf(pane));
         }
         Some(self.first_pane())
     }
