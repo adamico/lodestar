@@ -346,6 +346,24 @@ mod updates {
     }
 
     #[test]
+    fn an_applied_error_ends_the_transcript_so_the_user_sees_why_it_stopped() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        store.apply(SessionUpdate::TranscriptItem {
+            session: SessionId(1),
+            item: TranscriptItem::Error("claude exited (code 1)".into()),
+        });
+
+        assert_eq!(
+            store.session(SessionId(1)).unwrap().transcript.items(),
+            [
+                TranscriptItem::User("Hello".into()),
+                TranscriptItem::Error("claude exited (code 1)".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn an_applied_status_moves_the_session_to_it() {
         let mut store = SessionStore::load(&mut Fixtures);
 

@@ -78,6 +78,9 @@ pub enum TranscriptItem {
     /// A message from the Agent, as markdown.
     Assistant(String),
     ToolCall(ToolCall),
+    /// Why the session stopped short, in words for the user: the Agent exited, was killed or
+    /// could not start. Always the last item, since nothing happens after it.
+    Error(String),
 }
 
 /// The ordered messages and tool calls that make up a session's history.
