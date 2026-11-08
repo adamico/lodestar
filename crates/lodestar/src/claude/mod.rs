@@ -7,10 +7,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::time::Duration;
 
-use lodestar_core::session::{
-    InitialSessions, Project, SessionId, SessionSource, SessionStatus, SessionUpdate,
-    TranscriptItem,
-};
+use lodestar_core::session::{InitialSessions, Project, SessionId, SessionSource, SessionUpdate};
 
 use self::mapper::Event;
 use self::process::{Agent, AgentEvent, AgentExit};
@@ -28,8 +25,6 @@ pub struct ClaudeSource {
     agents: HashMap<SessionId, Agent>,
     /// Claude Code's own id for each session, for resuming one day.
     claude_session_ids: HashMap<SessionId, String>,
-    /// Updates made here (not by an Agent) since the last poll.
-    pending: Vec<SessionUpdate>,
 }
 
 impl ClaudeSource {
@@ -39,7 +34,6 @@ impl ClaudeSource {
             program,
             agents: HashMap::new(),
             claude_session_ids: HashMap::new(),
-            pending: Vec::new(),
         }
     }
 
@@ -70,16 +64,10 @@ impl ClaudeSource {
             }
             AgentEvent::Exited(exit) => {
                 self.agents.remove(&session);
-                vec![
-                    SessionUpdate::TranscriptItem {
-                        session,
-                        item: TranscriptItem::Error(self.exit_message(&exit)),
-                    },
-                    SessionUpdate::Status {
-                        session,
-                        status: SessionStatus::Done,
-                    },
-                ]
+                vec![SessionUpdate::Ended {
+                    session,
+                    error: self.exit_message(&exit),
+                }]
             }
         }
     }
@@ -107,7 +95,7 @@ impl SessionSource for ClaudeSource {
     }
 
     fn poll_updates(&mut self, _now: Duration) -> Vec<SessionUpdate> {
-        let mut updates = std::mem::take(&mut self.pending);
+        let mut updates = Vec::new();
         let mut sessions: Vec<SessionId> = self.agents.keys().copied().collect();
         sessions.sort();
         for session in sessions {
@@ -148,24 +136,14 @@ impl SessionSource for ClaudeSource {
         let Some(agent) = self.agents.get_mut(&session) else {
             return;
         };
-        match agent.send(text) {
-            Ok(()) => self.pending.push(SessionUpdate::Status {
-                session,
-                status: SessionStatus::Running,
-            }),
-            // The Agent is gone, or going: its exit is reported on the next poll if it has not
-            // been already; until then, say what happened to the message.
-            Err(error) => self.pending.push(SessionUpdate::TranscriptItem {
-                session,
-                item: TranscriptItem::Error(format!("Couldn't send the message: {error}.")),
-            }),
-        }
+        // A write fails only when the Agent is gone or going. Its exit ends the session on a
+        // poll soon, saying why; an error here as well would tell the user twice.
+        let _ = agent.send(text);
     }
 
     /// Kill every Agent (dropping one kills it) and forget what they had to say.
     fn shutdown(&mut self) {
         self.agents.clear();
-        self.pending.clear();
     }
 }
 
@@ -262,7 +240,10 @@ mod tests {
     }
 
     fn poll_until_done(source: &mut ClaudeSource) -> Vec<SessionUpdate> {
-        poll_until(source, |all| reached(all, SessionStatus::Done))
+        poll_until(source, |all| {
+            all.iter()
+                .any(|update| matches!(update, SessionUpdate::Ended { .. }))
+        })
     }
 
     #[cfg(unix)]
@@ -276,18 +257,10 @@ mod tests {
 
         assert_eq!(
             updates,
-            [
-                SessionUpdate::TranscriptItem {
-                    session: SessionId(3),
-                    item: TranscriptItem::Error(
-                        "claude exited (code 1).\nerror: unknown option".into()
-                    ),
-                },
-                SessionUpdate::Status {
-                    session: SessionId(3),
-                    status: SessionStatus::Done
-                },
-            ]
+            [SessionUpdate::Ended {
+                session: SessionId(3),
+                error: "claude exited (code 1).\nerror: unknown option".into()
+            }]
         );
     }
 
@@ -308,10 +281,6 @@ mod tests {
         assert_eq!(
             updates,
             [
-                SessionUpdate::Status {
-                    session: SessionId(3),
-                    status: SessionStatus::Running
-                },
                 SessionUpdate::Status {
                     session: SessionId(3),
                     status: SessionStatus::Running
@@ -339,16 +308,10 @@ mod tests {
 
         assert_eq!(
             updates,
-            [
-                SessionUpdate::TranscriptItem {
-                    session: SessionId(3),
-                    item: TranscriptItem::Error("claude was killed (signal 9).".into()),
-                },
-                SessionUpdate::Status {
-                    session: SessionId(3),
-                    status: SessionStatus::Done
-                },
-            ]
+            [SessionUpdate::Ended {
+                session: SessionId(3),
+                error: "claude was killed (signal 9).".into()
+            }]
         );
     }
 
@@ -465,6 +428,35 @@ mod tests {
         assert_eq!(
             started.unwrap_err(),
             "Couldn't start text-only.jsonl: Permission denied (os error 13)."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_message_to_an_agent_that_already_exited_ends_the_session_with_one_error() {
+        let gone = fake_dir("gone-before-send").join("gone");
+        let _ = fs::remove_file(&gone);
+        let project = fake_claude_doing(
+            "gone-before-send",
+            &format!("touch '{}'\nexit 1\n", gone.display()),
+        );
+        let mut source = fake_source();
+        source.start_agent(SessionId(3), &project).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !gone.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+
+        source.send_message(SessionId(3), "Anyone there?");
+        let updates = poll_until_done(&mut source);
+
+        assert_eq!(
+            updates,
+            [SessionUpdate::Ended {
+                session: SessionId(3),
+                error: "claude exited (code 1).".into()
+            }]
         );
     }
 }

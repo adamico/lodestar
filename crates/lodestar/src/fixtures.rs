@@ -280,11 +280,7 @@ mod tests {
             .filter_map(|session| {
                 let own: Vec<SessionUpdate> = updates
                     .iter()
-                    .filter(|update| match update {
-                        SessionUpdate::TranscriptItem { session: id, .. }
-                        | SessionUpdate::Status { session: id, .. }
-                        | SessionUpdate::ToolResult { session: id, .. } => *id == session.id,
-                    })
+                    .filter(|update| update.session() == session.id)
                     .cloned()
                     .collect();
                 (!own.is_empty()).then_some((session, own))
