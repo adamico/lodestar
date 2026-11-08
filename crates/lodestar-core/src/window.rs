@@ -109,35 +109,50 @@ pub struct Layout {
 #[derive(Debug, Clone)]
 enum Node {
     Pane(PaneId),
-    Split {
-        divider: DividerId,
-        axis: Axis,
-        /// The share of space, minus the divider, that goes to `first`.
-        ratio: f32,
-        first: Box<Node>,
-        second: Box<Node>,
-    },
+    Split(Split),
+}
+
+/// Two subtrees sharing a rect along an axis, with a divider between them.
+#[derive(Debug, Clone)]
+struct Split {
+    divider: DividerId,
+    axis: Axis,
+    /// The share of space, minus the divider, that goes to `first`.
+    ratio: f32,
+    first: Box<Node>,
+    second: Box<Node>,
+}
+
+impl Split {
+    fn new(divider: DividerId, axis: Axis, first: Node, second: Node) -> Self {
+        Self {
+            divider,
+            axis,
+            ratio: 0.5,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    /// The rects of the first side, the divider and the second side within `rect`.
+    fn lay_out(&self, rect: Rect) -> (Rect, Rect, Rect) {
+        split_rect(rect, self.axis, self.ratio)
+    }
 }
 
 impl Node {
     fn lay_out(&self, rect: Rect, layout: &mut Layout) {
         match self {
             Node::Pane(pane) => layout.panes.push(PaneLayout { pane: *pane, rect }),
-            Node::Split {
-                divider,
-                axis,
-                ratio,
-                first,
-                second,
-            } => {
-                let (first_rect, divider_rect, second_rect) = split_rect(rect, *axis, *ratio);
-                first.lay_out(first_rect, layout);
+            Node::Split(split) => {
+                let (first_rect, divider_rect, second_rect) = split.lay_out(rect);
+                split.first.lay_out(first_rect, layout);
                 layout.dividers.push(DividerLayout {
-                    id: *divider,
-                    axis: *axis,
+                    id: split.divider,
+                    axis: split.axis,
                     rect: divider_rect,
                 });
-                second.lay_out(second_rect, layout);
+                split.second.lay_out(second_rect, layout);
             }
         }
     }
@@ -201,13 +216,12 @@ impl WindowModel {
         let left = model.new_pane();
         let right = model.new_pane();
         let divider = model.new_divider();
-        model.root = Node::Split {
+        model.root = Node::Split(Split::new(
             divider,
-            axis: Axis::Horizontal,
-            ratio: 0.5,
-            first: Box::new(Node::Pane(left)),
-            second: Box::new(Node::Pane(right)),
-        };
+            Axis::Horizontal,
+            Node::Pane(left),
+            Node::Pane(right),
+        ));
         model.focused = left;
         model
     }
@@ -369,21 +383,11 @@ impl WindowModel {
             .rect_of_split(divider, area)
             .ok_or(Refused::NoSuchDivider)?;
         let split = self.root.split_mut(divider).ok_or(Refused::NoSuchDivider)?;
-        let Node::Split {
-            axis,
-            ratio: current,
-            first,
-            second,
-            ..
-        } = split
-        else {
-            unreachable!("split_mut returns a split");
-        };
-        let (first_rect, _, second_rect) = split_rect(rect, *axis, ratio);
-        if !first.fits_in(first_rect) || !second.fits_in(second_rect) {
+        let (first_rect, _, second_rect) = split_rect(rect, split.axis, ratio);
+        if !split.first.fits_in(first_rect) || !split.second.fits_in(second_rect) {
             return Err(Refused::BelowMinimumSize);
         }
-        *current = ratio;
+        split.ratio = ratio;
         Ok(())
     }
 
@@ -439,10 +443,7 @@ impl WindowModel {
             .rect_of_split(divider, area)
             .zip(self.root.split(divider))
             .ok_or(Refused::NoSuchDivider)?;
-        let Node::Split { axis, .. } = split else {
-            unreachable!("split returns a split");
-        };
-        let desired = match axis {
+        let desired = match split.axis {
             Axis::Horizontal => (position.x - rect.x) / (rect.width - DIVIDER_THICKNESS),
             Axis::Vertical => (position.y - rect.y) / (rect.height - DIVIDER_THICKNESS),
         };
@@ -460,32 +461,22 @@ impl WindowModel {
         else {
             return desired;
         };
-        let Node::Split {
-            axis,
-            ratio,
-            first,
-            second,
-            ..
-        } = split
-        else {
-            unreachable!("split returns a split");
-        };
-        let (available, first_min, second_min) = match axis {
+        let (available, first_min, second_min) = match split.axis {
             Axis::Horizontal => (
                 rect.width - DIVIDER_THICKNESS,
-                first.min_size().width,
-                second.min_size().width,
+                split.first.min_size().width,
+                split.second.min_size().width,
             ),
             Axis::Vertical => (
                 rect.height - DIVIDER_THICKNESS,
-                first.min_size().height,
-                second.min_size().height,
+                split.first.min_size().height,
+                split.second.min_size().height,
             ),
         };
         let lowest = first_min / available;
         let highest = (available - second_min) / available;
         if lowest > highest {
-            return *ratio;
+            return split.ratio;
         }
         desired.clamp(lowest, highest)
     }
@@ -512,18 +503,12 @@ impl Node {
     fn path_to(&self, pane: PaneId, path: &mut Vec<PathStep>) -> bool {
         match self {
             Node::Pane(id) => *id == pane,
-            Node::Split {
-                divider,
-                axis,
-                ratio,
-                first,
-                second,
-            } => {
-                for (child, is_first) in [(first, true), (second, false)] {
+            Node::Split(split) => {
+                for (child, is_first) in [(&split.first, true), (&split.second, false)] {
                     path.push(PathStep {
-                        divider: *divider,
-                        axis: *axis,
-                        ratio: *ratio,
+                        divider: split.divider,
+                        axis: split.axis,
+                        ratio: split.ratio,
                         is_first,
                     });
                     if child.path_to(pane, path) {
@@ -536,41 +521,42 @@ impl Node {
         }
     }
 
-    fn split(&self, divider: DividerId) -> Option<&Node> {
+    /// The split whose divider is `divider`, if it is under this node.
+    fn split(&self, divider: DividerId) -> Option<&Split> {
         match self {
             Node::Pane(_) => None,
-            Node::Split { divider: id, .. } if *id == divider => Some(self),
-            Node::Split { first, second, .. } => {
-                first.split(divider).or_else(|| second.split(divider))
-            }
+            Node::Split(split) if split.divider == divider => Some(split),
+            Node::Split(split) => split
+                .first
+                .split(divider)
+                .or_else(|| split.second.split(divider)),
         }
     }
 
-    fn split_mut(&mut self, divider: DividerId) -> Option<&mut Node> {
-        match self {
-            Node::Pane(_) => None,
-            Node::Split { divider: id, .. } if *id == divider => Some(self),
-            Node::Split { first, second, .. } => first
+    fn split_mut(&mut self, divider: DividerId) -> Option<&mut Split> {
+        let Node::Split(split) = self else {
+            return None;
+        };
+        if split.divider == divider {
+            Some(split)
+        } else {
+            split
+                .first
                 .split_mut(divider)
-                .or_else(|| second.split_mut(divider)),
+                .or_else(|| split.second.split_mut(divider))
         }
     }
 
     fn rect_of_split(&self, divider: DividerId, rect: Rect) -> Option<Rect> {
         match self {
             Node::Pane(_) => None,
-            Node::Split { divider: id, .. } if *id == divider => Some(rect),
-            Node::Split {
-                axis,
-                ratio,
-                first,
-                second,
-                ..
-            } => {
-                let (first_rect, _, second_rect) = split_rect(rect, *axis, *ratio);
-                first
+            Node::Split(split) if split.divider == divider => Some(rect),
+            Node::Split(split) => {
+                let (first_rect, _, second_rect) = split.lay_out(rect);
+                split
+                    .first
                     .rect_of_split(divider, first_rect)
-                    .or_else(|| second.rect_of_split(divider, second_rect))
+                    .or_else(|| split.second.rect_of_split(divider, second_rect))
             }
         }
     }
@@ -579,14 +565,9 @@ impl Node {
     fn min_size(&self) -> Size {
         match self {
             Node::Pane(_) => MIN_PANE_SIZE,
-            Node::Split {
-                axis,
-                first,
-                second,
-                ..
-            } => {
-                let (a, b) = (first.min_size(), second.min_size());
-                match axis {
+            Node::Split(split) => {
+                let (a, b) = (split.first.min_size(), split.second.min_size());
+                match split.axis {
                     Axis::Horizontal => Size::new(
                         a.width + DIVIDER_THICKNESS + b.width,
                         a.height.max(b.height),
@@ -730,9 +711,9 @@ impl Node {
             Node::Pane(id) if *id == a => *id = b,
             Node::Pane(id) if *id == b => *id = a,
             Node::Pane(_) => {}
-            Node::Split { first, second, .. } => {
-                first.swap_leaves(a, b);
-                second.swap_leaves(a, b);
+            Node::Split(split) => {
+                split.first.swap_leaves(a, b);
+                split.second.swap_leaves(a, b);
             }
         }
     }
@@ -769,18 +750,21 @@ impl Node {
                 } else {
                     (pane, new_pane)
                 };
-                *self = Node::Split {
+                *self = Node::Split(Split::new(
                     divider,
                     axis,
-                    ratio: 0.5,
-                    first: Box::new(Node::Pane(first)),
-                    second: Box::new(Node::Pane(second)),
-                };
+                    Node::Pane(first),
+                    Node::Pane(second),
+                ));
             }
             Node::Pane(_) => {}
-            Node::Split { first, second, .. } => {
-                first.split_leaf(pane, new_pane, divider, axis, new_first);
-                second.split_leaf(pane, new_pane, divider, axis, new_first);
+            Node::Split(split) => {
+                split
+                    .first
+                    .split_leaf(pane, new_pane, divider, axis, new_first);
+                split
+                    .second
+                    .split_leaf(pane, new_pane, divider, axis, new_first);
             }
         }
     }
@@ -791,15 +775,18 @@ impl Node {
     /// of that sibling, the one that took `pane`'s space; `None` when `pane` is the root or
     /// absent, in which case nothing changes.
     fn remove_leaf(&mut self, pane: PaneId) -> Option<PaneId> {
-        let Node::Split { first, second, .. } = self else {
+        let Node::Split(split) = self else {
             return None;
         };
-        if matches!(**first, Node::Pane(id) if id == pane) {
-            *self = std::mem::replace(second, Node::Pane(pane));
-        } else if matches!(**second, Node::Pane(id) if id == pane) {
-            *self = std::mem::replace(first, Node::Pane(pane));
+        if matches!(*split.first, Node::Pane(id) if id == pane) {
+            *self = std::mem::replace(&mut split.second, Node::Pane(pane));
+        } else if matches!(*split.second, Node::Pane(id) if id == pane) {
+            *self = std::mem::replace(&mut split.first, Node::Pane(pane));
         } else {
-            return first.remove_leaf(pane).or_else(|| second.remove_leaf(pane));
+            return split
+                .first
+                .remove_leaf(pane)
+                .or_else(|| split.second.remove_leaf(pane));
         }
         Some(self.first_pane())
     }
@@ -808,7 +795,7 @@ impl Node {
     fn first_pane(&self) -> PaneId {
         match self {
             Node::Pane(pane) => *pane,
-            Node::Split { first, .. } => first.first_pane(),
+            Node::Split(split) => split.first.first_pane(),
         }
     }
 }
