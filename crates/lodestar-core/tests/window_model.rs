@@ -435,3 +435,21 @@ mod open_session {
         }
     }
 }
+
+mod focus_and_swap {
+    use lodestar_core::geometry::Size;
+    use lodestar_core::window::{Direction, WindowModel};
+
+    const AREA: Size = Size::new(1601.0, 600.0);
+
+    #[test]
+    fn focus_right_from_the_left_launch_pane_lands_on_the_right_pane() {
+        let mut model = WindowModel::new();
+        let right = model.layout(AREA).panes[1].pane;
+
+        let moved = model.focus_in_direction(Direction::Right, AREA);
+
+        assert!(moved);
+        assert_eq!(model.focused_pane(), right);
+    }
+}
