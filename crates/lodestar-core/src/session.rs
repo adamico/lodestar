@@ -208,6 +208,30 @@ pub trait SessionSource {
     fn shutdown(&mut self) {}
 }
 
+/// Why a session cannot take a message right now. Each one reads as a line for the input box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendRefusal {
+    /// The Agent is still on its turn; messages do not pile up unseen.
+    AgentRunning,
+    /// The session's Agent is gone.
+    SessionDone,
+    /// The message has nothing but whitespace in it.
+    Blank,
+    UnknownSession,
+}
+
+impl SendRefusal {
+    /// One line that tells the user why the message was not sent.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::AgentRunning => "Agent is running; wait for it to finish",
+            Self::SessionDone => "Session is done",
+            Self::Blank => "Type a message first",
+            Self::UnknownSession => "No session to message",
+        }
+    }
+}
+
 /// Every known Project and session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionStore {
@@ -316,6 +340,36 @@ impl SessionStore {
                 }
             }
         }
+    }
+
+    /// Whether `session` can take a message now: only a session waiting for input can.
+    pub fn can_send(&self, session: SessionId) -> Result<(), SendRefusal> {
+        match self.session(session) {
+            None => Err(SendRefusal::UnknownSession),
+            Some(session) => match session.status {
+                SessionStatus::Running => Err(SendRefusal::AgentRunning),
+                SessionStatus::Done => Err(SendRefusal::SessionDone),
+                SessionStatus::WaitingForInput => Ok(()),
+            },
+        }
+    }
+
+    /// Record the user's `text` as sent to `session`: it joins the Transcript at once and the
+    /// session runs until its Agent answers. Carrying the text to the Agent is the caller's
+    /// job, once this succeeds. A refusal leaves the session as it was.
+    pub fn send(&mut self, session: SessionId, text: &str) -> Result<(), SendRefusal> {
+        self.can_send(session)?;
+        if text.trim().is_empty() {
+            return Err(SendRefusal::Blank);
+        }
+        let session = self
+            .session_mut(session)
+            .ok_or(SendRefusal::UnknownSession)?;
+        session
+            .transcript
+            .push(TranscriptItem::User(text.to_owned()));
+        session.status = SessionStatus::Running;
+        Ok(())
     }
 
     fn session_mut(&mut self, id: SessionId) -> Option<&mut Session> {

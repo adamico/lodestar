@@ -19,8 +19,6 @@ use crate::main_window::{MainWindow, pane_element_id, status_color, status_dot};
 
 const BROWSE_LABEL: &str = "Browse\u{2026}";
 const FILTER_PLACEHOLDER: &str = "Type to filter";
-/// What every new session opens with, until the input box arrives.
-const FIRST_MESSAGE: &str = "Say hello in one sentence.";
 
 impl MainWindow {
     fn picker_list(&self, pane: PaneId) -> PickerList {
@@ -177,8 +175,10 @@ impl MainWindow {
         }
     }
 
-    /// Start a new session in the Project at `path`, show it in `pane`, and start its Agent
-    /// on a first message. A session whose Agent could not start is done at once.
+    /// Start a new session in the Project at `path`, show it in `pane`, and start its Agent.
+    /// The Agent gets nothing until the user sends the first message from the input box; the
+    /// session waits for input until then. A session whose Agent could not start is done at
+    /// once.
     fn start_session_in(&mut self, path: PathBuf, pane: PaneId) {
         let project = self.sessions.find_or_create_project(path.clone());
         self.sessions.add_recent_folder(path);
@@ -192,24 +192,15 @@ impl MainWindow {
         let Some(project) = self.sessions.project(project).cloned() else {
             return;
         };
-        match self.source.start_agent(session, &project) {
-            Ok(()) => {
-                self.sessions.apply(SessionUpdate::TranscriptItem {
-                    session,
-                    item: TranscriptItem::User(FIRST_MESSAGE.into()),
-                });
-                self.source.send_message(session, FIRST_MESSAGE);
-            }
-            Err(message) => {
-                self.sessions.apply(SessionUpdate::TranscriptItem {
-                    session,
-                    item: TranscriptItem::Error(message),
-                });
-                self.sessions.apply(SessionUpdate::Status {
-                    session,
-                    status: SessionStatus::Done,
-                });
-            }
+        if let Err(message) = self.source.start_agent(session, &project) {
+            self.sessions.apply(SessionUpdate::TranscriptItem {
+                session,
+                item: TranscriptItem::Error(message),
+            });
+            self.sessions.apply(SessionUpdate::Status {
+                session,
+                status: SessionStatus::Done,
+            });
         }
     }
 
