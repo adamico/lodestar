@@ -820,3 +820,95 @@ mod turn_progress {
         );
     }
 }
+
+mod suggestions {
+    use std::time::Duration;
+
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{
+        ProjectId, SessionId, SessionStatus, SessionStore, SessionUpdate,
+    };
+
+    fn suggest(session: SessionId, text: &str) -> SessionUpdate {
+        SessionUpdate::Suggestion {
+            session,
+            text: text.into(),
+        }
+    }
+
+    fn waiting_session() -> (SessionStore, SessionId) {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+        (store, session)
+    }
+
+    #[test]
+    fn a_waiting_session_keeps_the_suggestion_its_agent_made() {
+        let (mut store, session) = waiting_session();
+
+        store.apply(suggest(session, "run cargo test"));
+
+        assert_eq!(store.suggestion(session), Some("run cargo test"));
+    }
+
+    #[test]
+    fn a_session_whose_agent_never_suggests_has_no_suggestion() {
+        let (store, session) = waiting_session();
+
+        assert_eq!(store.suggestion(session), None);
+    }
+
+    #[test]
+    fn sending_the_next_message_drops_the_suggestion() {
+        let (mut store, session) = waiting_session();
+        store.apply(suggest(session, "run cargo test"));
+
+        store
+            .send(session, "Fix the README.", Duration::ZERO)
+            .unwrap();
+
+        assert_eq!(store.suggestion(session), None);
+    }
+
+    #[test]
+    fn a_suggestion_that_arrives_once_the_next_turn_runs_is_dropped() {
+        let (mut store, session) = waiting_session();
+        store.send(session, "Go.", Duration::ZERO).unwrap();
+
+        store.apply(suggest(session, "run cargo test"));
+
+        assert_eq!(store.suggestion(session), None);
+    }
+
+    #[test]
+    fn a_session_that_runs_or_ends_loses_its_suggestion() {
+        let leaving_waiting = [
+            |session| SessionUpdate::Status {
+                session,
+                status: SessionStatus::Running,
+            },
+            |session| SessionUpdate::Ended {
+                session,
+                error: "claude exited (code 1).".into(),
+            },
+        ];
+        for leave in leaving_waiting {
+            let (mut store, session) = waiting_session();
+            store.apply(suggest(session, "run cargo test"));
+
+            store.apply(leave(session));
+
+            assert_eq!(store.suggestion(session), None);
+        }
+    }
+
+    #[test]
+    fn a_newer_suggestion_replaces_the_older_one() {
+        let (mut store, session) = waiting_session();
+        store.apply(suggest(session, "run cargo test"));
+
+        store.apply(suggest(session, "commit the fix"));
+
+        assert_eq!(store.suggestion(session), Some("commit the fix"));
+    }
+}

@@ -13,8 +13,9 @@ use lodestar_core::session::SessionId;
 /// The flags every Agent starts with. `-p` with stream-json in and out keeps the process
 /// alive for as long as stdin is open; `--verbose` makes it emit every event;
 /// `--include-partial-messages` adds the partial messages that drive the working indicator;
-/// the permission mode is ADR 0003's.
-const ARGS: [&str; 9] = [
+/// `--prompt-suggestions` adds a guess at the user's next message after each turn; the
+/// permission mode is ADR 0003's.
+const ARGS: [&str; 11] = [
     "-p",
     "--input-format",
     "stream-json",
@@ -22,6 +23,8 @@ const ARGS: [&str; 9] = [
     "stream-json",
     "--verbose",
     "--include-partial-messages",
+    "--prompt-suggestions",
+    "true",
     "--permission-mode",
     "acceptEdits",
 ];

@@ -54,3 +54,24 @@ Start Lodestar with a real `claude`, start a session and send a message.
       running pane keeps following its tail; the indicator stays put as the list scrolls.
 - [ ] With `LODESTAR_FIXTURES=1`, a session running at startup shows the indicator counting
       from startup.
+
+## Prompt suggestions
+
+Issue #28. Start Lodestar with a real `claude`, start a session and ask for something with
+an obvious next step, for instance "Show a fixed version of
+`fn add(a: i32, b: i32) -> i32 { a - b }`, no tools".
+
+- [ ] When the turn ends with a suggestion, the empty input box fills with it, all selected.
+      `enter` sends it as is; typing a letter replaces the whole suggestion with that letter.
+- [ ] Type something while the Agent is still running, before the suggestion arrives. When
+      the turn ends, the box still holds exactly what you typed.
+- [ ] Delete an offered suggestion. It does not come back while the pane keeps showing the
+      session, even when the pane loses and regains focus.
+- [ ] Leave an offered suggestion untouched, then show another session in that pane: the
+      box no longer holds the first session's suggestion. Likewise with the session in two
+      panes, sending from one empties the other's untouched offer.
+- [ ] Edit an offered suggestion a little, then show another session in the pane: the
+      edited text stays, as typed text does.
+- [ ] A turn that ends without a suggestion (short factual answers often do) leaves the box
+      empty with its usual placeholder, and sending works as before.
+- [ ] With `LODESTAR_FIXTURES=1` nothing is ever suggested, and the boxes behave as before.

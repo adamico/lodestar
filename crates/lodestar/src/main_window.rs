@@ -23,7 +23,7 @@ use crate::leader::{
 };
 use crate::sidebar_view::SidebarState;
 
-use crate::transcript_view::{self, Scroll, TRANSCRIPT_FLAG, TranscriptViews};
+use crate::transcript_view::{self, InputFacts, Scroll, TRANSCRIPT_FLAG, TranscriptViews};
 
 const PANE_HEADER_HEIGHT: Pixels = px(30.);
 /// Lodestar's one accent colour: marks the focused pane.
@@ -527,9 +527,13 @@ impl MainWindow {
                 .render(
                     pane,
                     session,
-                    self.sessions.can_send(session.id),
-                    self.sessions
-                        .working_line(session.id, self.started.elapsed()),
+                    InputFacts {
+                        can_send: self.sessions.can_send(session.id),
+                        working: self
+                            .sessions
+                            .working_line(session.id, self.started.elapsed()),
+                        suggestion: self.sessions.suggestion(session.id),
+                    },
                     window,
                     cx,
                 )

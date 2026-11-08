@@ -197,6 +197,9 @@ pub enum SessionUpdate {
         phase: Phase,
         output_tokens: u64,
     },
+    /// The Agent predicts what the user will say next, as `text`, once its turn is over. Only
+    /// a session waiting for input keeps it, until the next message is sent.
+    Suggestion { session: SessionId, text: String },
 }
 
 impl SessionUpdate {
@@ -207,7 +210,8 @@ impl SessionUpdate {
             | Self::Status { session, .. }
             | Self::ToolResult { session, .. }
             | Self::Ended { session, .. }
-            | Self::Progress { session, .. } => *session,
+            | Self::Progress { session, .. }
+            | Self::Suggestion { session, .. } => *session,
         }
     }
 }
@@ -284,6 +288,8 @@ pub struct SessionStore {
     recent_folders: Vec<PathBuf>,
     /// How far each running session's current turn has got.
     turns: HashMap<SessionId, TurnProgress>,
+    /// The Agent's guess at each waiting session's next message.
+    suggestions: HashMap<SessionId, String>,
 }
 
 impl SessionStore {
@@ -304,6 +310,7 @@ impl SessionStore {
             sessions,
             recent_folders,
             turns,
+            suggestions: HashMap::new(),
         }
     }
 
@@ -384,6 +391,12 @@ impl SessionStore {
         })
     }
 
+    /// What `session`'s Agent guessed the user will say next, while the session waits for
+    /// that message.
+    pub fn suggestion(&self, session: SessionId) -> Option<&str> {
+        self.suggestions.get(&session).map(String::as_str)
+    }
+
     /// Record `update` on its session: append the item to its Transcript, or move it to the
     /// new status. Whether the session is shown anywhere is not the store's concern; updates
     /// land all the same. Updates for unknown sessions are dropped.
@@ -397,6 +410,9 @@ impl SessionStore {
             SessionUpdate::Status { session, status } => {
                 if status != SessionStatus::Running {
                     self.turns.remove(&session);
+                }
+                if status != SessionStatus::WaitingForInput {
+                    self.suggestions.remove(&session);
                 }
                 if let Some(session) = self.session_mut(session) {
                     session.status = status;
@@ -413,6 +429,7 @@ impl SessionStore {
             }
             SessionUpdate::Ended { session, error } => {
                 self.turns.remove(&session);
+                self.suggestions.remove(&session);
                 if let Some(session) = self.session_mut(session) {
                     session.transcript.end_pending_calls();
                     session.transcript.push(TranscriptItem::Error(error));
@@ -427,6 +444,11 @@ impl SessionStore {
                 if let Some(turn) = self.turns.get_mut(&session) {
                     turn.phase = phase;
                     turn.output_tokens = output_tokens;
+                }
+            }
+            SessionUpdate::Suggestion { session, text } => {
+                if self.can_send(session).is_ok() {
+                    self.suggestions.insert(session, text);
                 }
             }
         }
@@ -467,6 +489,7 @@ impl SessionStore {
             .push(TranscriptItem::User(text.to_owned()));
         session.status = SessionStatus::Running;
         self.turns.insert(id, TurnProgress::started_at(now));
+        self.suggestions.remove(&id);
         Ok(())
     }
 

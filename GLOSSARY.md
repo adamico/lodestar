@@ -39,3 +39,7 @@ _Avoid_: Error message, failure entry, crash note
 **Pending tool call**:
 A tool call in a Transcript whose result has not arrived yet. It is shown collapsed with a pending marker.
 _Avoid_: In-flight call, running tool, incomplete tool call
+
+**Prompt suggestion**:
+The Agent's guess at the user's next message, made after a turn. It is offered in the input box, selected, and only while the session waits for that message.
+_Avoid_: Prediction, autocomplete, hint

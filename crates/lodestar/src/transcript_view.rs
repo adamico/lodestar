@@ -12,7 +12,9 @@
 //! at least every poll while a session runs, so its seconds tick.
 //!
 //! The input box sends on `enter` (`shift+enter` inserts a newline) and `escape` hands the
-//! keyboard back to the window. Whether a session can take a message, and what sending does to
+//! keyboard back to the window. When the Agent suggests the next message, the box offers it
+//! once, selected, so `enter` sends it and typing replaces it; a box the user has typed in
+//! keeps its text, and an untouched offer leaves with its suggestion. Whether a session can take a message, and what sending does to
 //! it, are rules of `lodestar_core::session::SessionStore`; this only forwards.
 
 use std::collections::{HashMap, HashSet};
@@ -115,6 +117,16 @@ pub fn on_scroll_actions(element: Div, cx: &mut Context<MainWindow>) -> Div {
         }))
 }
 
+/// What the store says about a session's input box as it renders.
+pub struct InputFacts<'a> {
+    /// Whether the session takes a message now; a refusal is shown by the box.
+    pub can_send: Result<(), SendRefusal>,
+    /// The working indicator's line, shown just above the box while the session runs.
+    pub working: Option<String>,
+    /// The Agent's guess at the next message, which fills an empty box.
+    pub suggestion: Option<&'a str>,
+}
+
 /// The view state of every pane that shows a Transcript, keyed by pane.
 #[derive(Default)]
 pub struct TranscriptViews {
@@ -132,6 +144,9 @@ struct PaneTranscript {
     _input_events: Subscription,
     /// The placeholder the input shows: the invitation to type, or why sending is refused.
     placeholder: &'static str,
+    /// The suggestion this box was last offered, so each is offered once. When the session
+    /// it came from no longer suggests it, the box drops it if it still holds it untouched.
+    offered: Option<String>,
     /// Indices of the tool calls the user has expanded.
     expanded: HashSet<usize>,
     /// Whether the list was told to follow its tail, which it does for a running session.
@@ -144,19 +159,21 @@ impl TranscriptViews {
     /// Render `session`'s Transcript in `pane`: the list above, the input box below.
     ///
     /// While the session runs, the list follows new items; once the user scrolls up, a pill
-    /// over the bottom of the list offers to jump back to the latest. `can_send` is the
-    /// store's answer on whether the session takes a message now; a refusal is shown by the
-    /// box. `working` is the working indicator's line, shown just above the input box while
-    /// the session runs.
+    /// over the bottom of the list offers to jump back to the latest. `input` is what the
+    /// store says about the input box.
     pub fn render(
         &mut self,
         pane: PaneId,
         session: &Session,
-        can_send: Result<(), SendRefusal>,
-        working: Option<String>,
+        input: InputFacts<'_>,
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> impl IntoElement + use<> {
+        let InputFacts {
+            can_send,
+            working,
+            suggestion,
+        } = input;
         let transcript = &session.transcript;
         let streaming = session.status == SessionStatus::Running;
         let state = self.sync(
@@ -176,6 +193,23 @@ impl TranscriptViews {
             state.input.update(cx, |input, cx| {
                 input.set_placeholder(placeholder, window, cx)
             });
+        }
+        if state.offered.as_deref() != suggestion {
+            let withdrawn = state.offered.take();
+            state.input.update(cx, |input, cx| {
+                // An offer nobody touched is not the user's text: it goes with its suggestion
+                // (sent from another pane, the session ended, the pane shows another session).
+                if withdrawn.is_some_and(|old| input.value() == old.as_str()) {
+                    input.clean(window, cx);
+                }
+                if let Some(text) = suggestion
+                    && input.value().is_empty()
+                {
+                    input.set_value(text.to_owned(), window, cx);
+                    input.select_all(window, cx);
+                }
+            });
+            state.offered = suggestion.map(str::to_owned);
         }
         let notice = can_send.err().filter(|_| working.is_none()).map(|refusal| {
             div()
@@ -358,6 +392,7 @@ impl TranscriptViews {
                 input,
                 _input_events: input_events,
                 placeholder: INPUT_PLACEHOLDER,
+                offered: None,
                 expanded: HashSet::new(),
                 follows_tail: false,
                 items: item_count,
