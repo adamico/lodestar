@@ -352,6 +352,46 @@ impl WindowModel {
         Ok(())
     }
 
+    /// The ratio nearest to `desired` that [`Self::set_ratio`] would accept for `divider`: a
+    /// mouse drag past the limit stops at the minimum pane size instead of being refused. A
+    /// divider that no longer exists, or whose panes are already too small, keeps its ratio.
+    pub fn clamped_ratio(&self, divider: DividerId, desired: f32, area: Size) -> f32 {
+        let Some((rect, split)) = self
+            .rect_of_split(divider, area)
+            .zip(self.root.split(divider))
+        else {
+            return desired;
+        };
+        let Node::Split {
+            axis,
+            ratio,
+            first,
+            second,
+            ..
+        } = split
+        else {
+            unreachable!("split returns a split");
+        };
+        let (available, first_min, second_min) = match axis {
+            Axis::Horizontal => (
+                rect.width - DIVIDER_THICKNESS,
+                first.min_size().width,
+                second.min_size().width,
+            ),
+            Axis::Vertical => (
+                rect.height - DIVIDER_THICKNESS,
+                first.min_size().height,
+                second.min_size().height,
+            ),
+        };
+        let lowest = first_min / available;
+        let highest = (available - second_min) / available;
+        if lowest > highest {
+            return *ratio;
+        }
+        desired.clamp(lowest, highest)
+    }
+
     /// The rect that the split owning `divider` is laid out in.
     fn rect_of_split(&self, divider: DividerId, area: Size) -> Option<Rect> {
         self.root
@@ -360,6 +400,16 @@ impl WindowModel {
 }
 
 impl Node {
+    fn split(&self, divider: DividerId) -> Option<&Node> {
+        match self {
+            Node::Pane(_) => None,
+            Node::Split { divider: id, .. } if *id == divider => Some(self),
+            Node::Split { first, second, .. } => {
+                first.split(divider).or_else(|| second.split(divider))
+            }
+        }
+    }
+
     fn split_mut(&mut self, divider: DividerId) -> Option<&mut Node> {
         match self {
             Node::Pane(_) => None,

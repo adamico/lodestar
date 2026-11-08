@@ -467,3 +467,97 @@ mod resize {
         );
     }
 }
+
+mod resize_limits {
+    use lodestar_core::geometry::{Rect, Size};
+    use lodestar_core::window::{Direction, Refused, WindowModel};
+
+    /// Two launch panes of 500×600 each.
+    const AREA: Size = Size::new(1001.0, 600.0);
+
+    fn rects(model: &WindowModel) -> Vec<Rect> {
+        model.layout(AREA).panes.iter().map(|p| p.rect).collect()
+    }
+
+    #[test]
+    fn a_ratio_that_would_make_the_left_pane_too_narrow_is_refused_and_changes_nothing() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+        let before = rects(&model);
+
+        // 0.3 of 1000 is 300px, under the 320px minimum.
+        let result = model.set_ratio(divider, 0.3, AREA);
+
+        assert_eq!(result, Err(Refused::BelowMinimumSize));
+        assert_eq!(rects(&model), before);
+    }
+
+    #[test]
+    fn a_ratio_that_would_make_the_right_pane_too_narrow_is_refused() {
+        let mut model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        assert_eq!(
+            model.set_ratio(divider, 0.7, AREA),
+            Err(Refused::BelowMinimumSize)
+        );
+        assert_eq!(model.set_ratio(divider, 0.68, AREA), Ok(()));
+    }
+
+    #[test]
+    fn a_ratio_is_refused_when_a_pane_nested_on_that_side_would_be_too_narrow() {
+        // Wide area: 1601×600, launch panes 800×600. Split the right one side by side, so two
+        // 399.5px panes sit right of the launch divider; together they need 641px.
+        let area = Size::new(1601.0, 600.0);
+        let mut model = WindowModel::new();
+        let right = model.layout(area).panes[1].pane;
+        model.split(right, Direction::Right, area).expect("fits");
+        let launch_divider = model.layout(area).dividers[0].id;
+
+        // 0.6 leaves 640px for the right side, 1px short of the two minimum panes.
+        assert_eq!(
+            model.set_ratio(launch_divider, 0.6, area),
+            Err(Refused::BelowMinimumSize)
+        );
+        assert_eq!(model.set_ratio(launch_divider, 0.59, area), Ok(()));
+    }
+
+    #[test]
+    fn set_the_ratio_of_a_divider_that_no_longer_exists_and_it_is_refused() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (divider, right) = (layout.dividers[0].id, layout.panes[1].pane);
+        model.close(right);
+
+        assert_eq!(
+            model.set_ratio(divider, 0.4, AREA),
+            Err(Refused::NoSuchDivider)
+        );
+    }
+
+    #[test]
+    fn clamping_a_ratio_stops_each_side_at_the_minimum_pane_size() {
+        let model = WindowModel::new();
+        let divider = model.layout(AREA).dividers[0].id;
+
+        // 1000px of space: 320px minimum each side is ratio 0.32 on the left, 0.68 on the right.
+        assert_eq!(model.clamped_ratio(divider, 0.1, AREA), 0.32);
+        assert_eq!(model.clamped_ratio(divider, 0.9, AREA), 0.68);
+        assert_eq!(model.clamped_ratio(divider, 0.5, AREA), 0.5);
+    }
+
+    #[test]
+    fn clamping_a_ratio_keeps_room_for_the_panes_nested_on_each_side() {
+        let area = Size::new(1601.0, 600.0);
+        let mut model = WindowModel::new();
+        let right = model.layout(area).panes[1].pane;
+        model.split(right, Direction::Right, area).expect("fits");
+        let launch_divider = model.layout(area).dividers[0].id;
+
+        // 1600px of space; the right side needs 641px, so the left may take at most 959px.
+        let ratio = model.clamped_ratio(launch_divider, 1.0, area);
+
+        assert_eq!(ratio, 959.0 / 1600.0);
+        assert_eq!(model.set_ratio(launch_divider, ratio, area), Ok(()));
+    }
+}
