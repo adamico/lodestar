@@ -380,3 +380,106 @@ mod updates {
         );
     }
 }
+
+mod sending {
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{
+        ProjectId, SendRefusal, SessionId, SessionStatus, SessionStore, TranscriptItem,
+    };
+
+    #[test]
+    fn a_message_sent_to_a_waiting_session_is_in_its_transcript_and_it_runs() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        let sent = store.send(session, "Add a README.");
+
+        assert_eq!(sent, Ok(()));
+        let session = store.session(session).unwrap();
+        assert_eq!(
+            session.transcript.items(),
+            [TranscriptItem::User("Add a README.".into())]
+        );
+        assert_eq!(session.status, SessionStatus::Running);
+    }
+
+    #[test]
+    fn a_running_session_refuses_a_message_and_keeps_its_transcript() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+        store.send(session, "First.").unwrap();
+
+        let sent = store.send(session, "Second.");
+
+        assert_eq!(sent, Err(SendRefusal::AgentRunning));
+        assert_eq!(
+            store.session(session).unwrap().transcript.items(),
+            [TranscriptItem::User("First.".into())]
+        );
+    }
+
+    #[test]
+    fn a_done_session_refuses_a_message() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        let sent = store.send(SessionId(0), "Anyone there?");
+
+        assert_eq!(sent, Err(SendRefusal::SessionDone));
+        assert_eq!(
+            store.session(SessionId(0)).unwrap().status,
+            SessionStatus::Done
+        );
+    }
+
+    #[test]
+    fn a_blank_message_is_not_sent() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        let sent = store.send(session, "  \n ");
+
+        assert_eq!(sent, Err(SendRefusal::Blank));
+        assert!(store.session(session).unwrap().transcript.items().is_empty());
+        assert_eq!(
+            store.session(session).unwrap().status,
+            SessionStatus::WaitingForInput
+        );
+    }
+
+    #[test]
+    fn a_message_for_an_unknown_session_is_refused() {
+        let mut store = SessionStore::load(&mut Fixtures);
+
+        assert_eq!(
+            store.send(SessionId(99), "Hello?"),
+            Err(SendRefusal::UnknownSession)
+        );
+    }
+
+    #[test]
+    fn can_send_answers_without_sending() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        assert_eq!(store.can_send(session), Ok(()));
+        assert_eq!(store.can_send(SessionId(0)), Err(SendRefusal::SessionDone));
+        assert!(store.session(session).unwrap().transcript.items().is_empty());
+    }
+
+    #[test]
+    fn each_refusal_explains_itself_in_one_line() {
+        assert_eq!(
+            SendRefusal::AgentRunning.reason(),
+            "Agent is running; wait for it to finish"
+        );
+        assert_eq!(SendRefusal::SessionDone.reason(), "Session is done");
+        for refusal in [
+            SendRefusal::AgentRunning,
+            SendRefusal::SessionDone,
+            SendRefusal::Blank,
+            SendRefusal::UnknownSession,
+        ] {
+            assert!(!refusal.reason().contains('\n'));
+        }
+    }
+}
