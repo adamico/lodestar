@@ -93,14 +93,20 @@ impl MainWindow {
     }
 
     /// Apply whatever the source has for us by now. Sidebar dots, pane headers and
-    /// Transcripts all render the store, so one notify refreshes them all.
+    /// Transcripts all render the store, so one notify refreshes them all. While a session
+    /// runs, every tick re-renders, so its working indicator's seconds keep counting.
     fn pump_updates(&mut self, cx: &mut Context<Self>) {
         let updates = self.source.poll_updates(self.started.elapsed());
         let changed = !updates.is_empty();
         for update in updates {
             self.sessions.apply(update);
         }
-        if changed || self.transcripts.any_paused() {
+        let running = self
+            .sessions
+            .sessions_newest_first()
+            .iter()
+            .any(|session| session.status == SessionStatus::Running);
+        if changed || running || self.transcripts.any_paused() {
             cx.notify();
         }
     }
@@ -113,7 +119,11 @@ impl MainWindow {
             return;
         };
         let text = self.transcripts.input_text(pane, cx);
-        if self.sessions.send(session, &text, self.started.elapsed()).is_ok() {
+        if self
+            .sessions
+            .send(session, &text, self.started.elapsed())
+            .is_ok()
+        {
             self.source.send_message(session, &text);
             self.transcripts.clear_input(pane, window, cx);
         }
@@ -518,6 +528,8 @@ impl MainWindow {
                     pane,
                     session,
                     self.sessions.can_send(session.id),
+                    self.sessions
+                        .working_line(session.id, self.started.elapsed()),
                     window,
                     cx,
                 )

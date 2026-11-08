@@ -680,7 +680,9 @@ mod turn_progress {
     use std::time::Duration;
 
     use super::new_sessions::Fixtures;
-    use lodestar_core::session::{ProjectId, SessionId, SessionStatus, SessionStore, SessionUpdate};
+    use lodestar_core::session::{
+        ProjectId, SessionId, SessionStatus, SessionStore, SessionUpdate,
+    };
     use lodestar_core::turn::{Phase, TurnProgress};
 
     fn running(at: Duration) -> (SessionStore, SessionId) {

@@ -5,11 +5,16 @@
 //! running follows the tail: new rows keep the end in view until the user scrolls up, which
 //! pauses following and shows a "Jump to latest" pill that resumes it.
 //!
+//! While the session runs, one more row follows the last item: the working indicator, a
+//! spinner and the store's working line (`55s · 1.5k tokens · Thinking`). The window
+//! re-renders at least every poll while a session runs, so its seconds tick.
+//!
 //! The input box sends on `enter` (`shift+enter` inserts a newline) and `escape` hands the
 //! keyboard back to the window. Whether a session can take a message, and what sending does to
 //! it, are rules of `lodestar_core::session::SessionStore`; this only forwards.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
@@ -36,6 +41,11 @@ const EXPANDED_MARKER: &str = "\u{25BE}";
 const PENDING_MARKER: &str = "\u{22EF} pending";
 const PENDING_OUTPUT: &str = "(pending)";
 const JUMP_TO_LATEST: &str = "\u{2193} Jump to latest";
+/// How many dots the working spinner has, and how long one sweep across them takes.
+const SPINNER_DOTS: usize = 3;
+const SPINNER_PERIOD: Duration = Duration::from_millis(900);
+/// The spinner's frame rate cap: smooth enough, without drawing every frame.
+const SPINNER_FPS: f32 = 30.;
 
 actions!(
     lodestar,
@@ -124,6 +134,10 @@ struct PaneTranscript {
     expanded: HashSet<usize>,
     /// Whether the list was told to follow its tail, which it does for a running session.
     follows_tail: bool,
+    /// How many Transcript items the list has rows for, and whether the working indicator
+    /// row follows them.
+    items: usize,
+    indicator: bool,
 }
 
 impl TranscriptViews {
@@ -132,12 +146,14 @@ impl TranscriptViews {
     /// While the session runs, the list follows new items; once the user scrolls up, a pill
     /// over the bottom of the list offers to jump back to the latest. `can_send` is the
     /// store's answer on whether the session takes a message now; a refusal is shown by the
-    /// box.
+    /// box. `working` is the working indicator's line, shown after the last item while the
+    /// session runs.
     pub fn render(
         &mut self,
         pane: PaneId,
         session: &Session,
         can_send: Result<(), SendRefusal>,
+        working: Option<String>,
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> impl IntoElement + use<> {
@@ -178,7 +194,10 @@ impl TranscriptViews {
         let list_for_scrollbar = list_state.clone();
 
         let list = list(list_state, move |ix, _, cx| {
-            let item = &items[ix];
+            let Some(item) = items.get(ix) else {
+                return render_working(pane, working.as_deref().unwrap_or_default(), cx)
+                    .into_any_element();
+            };
             div()
                 .w_full()
                 .min_w_0()
@@ -299,11 +318,13 @@ impl TranscriptViews {
         self.panes.retain(|pane, _| shows_transcript(*pane));
     }
 
-    /// The state for `pane`, sized for `item_count` items of `session`.
+    /// The state for `pane`, sized for `item_count` items of `session`, plus the working
+    /// indicator's row while the session is `streaming`.
     ///
     /// A pane that switches session starts with every tool call collapsed, from the top, or
     /// from the end and following the tail when the session is `streaming`; a Transcript
-    /// that grew keeps its scroll position and learns about the new rows.
+    /// that grew keeps its scroll position and learns about the new rows. The indicator row
+    /// counts as changed whenever the items do, so an item never inherits its height.
     fn sync(
         &mut self,
         pane: PaneId,
@@ -313,6 +334,7 @@ impl TranscriptViews {
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> &mut PaneTranscript {
+        let indicator = streaming;
         let mut fresh = false;
         let state = self.panes.entry(pane).or_insert_with(|| {
             fresh = true;
@@ -335,26 +357,33 @@ impl TranscriptViews {
             );
             PaneTranscript {
                 session,
-                list: ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW),
+                list: ListState::new(
+                    item_count + usize::from(indicator),
+                    ListAlignment::Top,
+                    LIST_OVERDRAW,
+                ),
                 input,
                 _input_events: input_events,
                 placeholder: INPUT_PLACEHOLDER,
                 expanded: HashSet::new(),
                 follows_tail: false,
+                items: item_count,
+                indicator,
             }
         });
+        let rows = item_count + usize::from(indicator);
         if state.session != session {
             fresh = true;
             state.session = session;
             state.expanded.clear();
-            state.list.reset(item_count);
-        } else {
+            state.list.reset(rows);
+        } else if item_count != state.items || indicator != state.indicator {
             let known = state.list.item_count();
-            if item_count != known {
-                let kept = known.min(item_count);
-                state.list.splice(kept..known, item_count - kept);
-            }
+            let kept = state.items.min(item_count);
+            state.list.splice(kept..known, rows - kept);
         }
+        state.items = item_count;
+        state.indicator = indicator;
         if fresh {
             state.follows_tail = streaming;
             state.list.set_follow_mode(if streaming {
@@ -397,6 +426,46 @@ fn render_jump_to_latest(pane: PaneId, cx: &mut Context<MainWindow>) -> impl Int
                 .on_click(cx.listener(move |this, _, _, cx| this.jump_to_latest(pane, cx)))
                 .child(JUMP_TO_LATEST),
         )
+}
+
+/// The working indicator: an orange spinner, then `line` in muted text.
+fn render_working(pane: PaneId, line: &str, cx: &App) -> impl IntoElement {
+    h_flex()
+        .px_3()
+        .pb_3()
+        .gap_2()
+        .text_color(cx.theme().muted_foreground)
+        .child(render_spinner(pane))
+        .child(line.to_string())
+}
+
+/// Three orange dots on a diagonal, a bright one sweeping across them and fading behind.
+fn render_spinner(pane: PaneId) -> impl IntoElement {
+    let dot = |ix: usize| {
+        let lead = ix as f32 / SPINNER_DOTS as f32;
+        div()
+            .size(px(4.))
+            .rounded_full()
+            .bg(gpui_kit::component::theme::orange_500())
+            .with_animation(
+                item_element_id(pane, ix, "working-dot"),
+                Animation::new(SPINNER_PERIOD)
+                    .repeat_synced()
+                    .with_max_fps(SPINNER_FPS),
+                move |dot, delta| {
+                    let since_lit = (delta - lead).rem_euclid(1.);
+                    dot.opacity(0.25 + 0.75 * (1. - since_lit))
+                },
+            )
+    };
+    div()
+        .relative()
+        .size(px(12.))
+        .flex_shrink_0()
+        .children((0..SPINNER_DOTS).map(|ix| {
+            let offset = px(4. * ix as f32);
+            div().absolute().left(offset).top(offset).child(dot(ix))
+        }))
 }
 
 /// A user message: a marker and the text on an accent-tinted card.

@@ -35,3 +35,21 @@ Start Lodestar (`cargo run`) with a real `claude` on PATH, or `LODESTAR_CLAUDE_B
 - **Missing binary.** `LODESTAR_CLAUDE_BIN=no-such-claude cargo run`, start a session. The new session's Transcript holds one Error item: "Couldn't start no-such-claude: not found on PATH. Install Claude Code or set LODESTAR_CLAUDE_BIN." and its status is done.
 - **Missing Project.** Start a session in a folder, delete the folder, start another session there. The Error item reads "The Project <path> no longer exists on disk."
 - **No orphans on quit.** Start two or three sessions, check `pgrep -f 'claude -p'` lists them, then close the window (the last window quits the app). `pgrep -f 'claude -p'` lists nothing. Note: ctrl-c on `cargo run` does not run the quit hook. An idle `claude` still exits by itself about half a second after its stdin closes, which happens when Lodestar dies; one mid-turn may linger until its turn ends (not verified).
+
+## Working indicator
+
+Start Lodestar with a real `claude`, start a session and send a message.
+
+- [ ] While the Agent works, one muted line follows the last Transcript item: three orange dots
+      with a bright one sweeping across them, then `12s · 340 tokens · Thinking`. It is gone
+      once the reply lands and the session waits for input, and after a failed turn or an exit.
+- [ ] The seconds count up every quarter second or so, from the moment the message was sent,
+      and switch to `1m 05s` past a minute; the tokens grow as the reply is written
+      (`1.5k tokens` past a thousand) and keep adding up across tool calls.
+- [ ] The last word follows the work: `Working` while a request is sent, `Thinking`, `Writing`,
+      and a tool's label (`Running Bash`, `Reading`, `Editing`, `Searching`, `Using <tool>`)
+      from the call until the next request.
+- [ ] The Transcript still gets one Assistant item per message, never a partial one, and a
+      running pane keeps following its tail with the indicator in view.
+- [ ] With `LODESTAR_FIXTURES=1`, a session running at startup shows the indicator counting
+      from startup.
