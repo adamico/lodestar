@@ -27,3 +27,7 @@ _Avoid_: Workspace, repo, working directory, folder
 **Session status**:
 Where a session stands right now: running, waiting for input, or done.
 _Avoid_: State
+
+**Pending tool call**:
+A tool call in a Transcript whose result has not arrived yet. It is shown collapsed with a pending marker.
+_Avoid_: In-flight call, running tool, incomplete tool call
