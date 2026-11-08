@@ -1,8 +1,8 @@
 //! The `ctrl+space` leader: a mode flag on the window plus a key context, not a GPUI key
 //! sequence, so it never times out and later sticky modes (resize) can build on it.
 //!
-//! Adding a leader key means one match arm in [`LeaderCommand::from_keystroke`], one entry in
-//! [`LeaderCommand::ALL`] for the hint popup, and one arm where the window runs the command.
+//! Adding a leader key means one row in [`LeaderCommand::ALL`], which drives both the hint
+//! popup and [`LeaderCommand::from_keystroke`], and one arm where the window runs the command.
 
 use gpui_kit::*;
 use lodestar_core::window::Direction;
@@ -78,17 +78,36 @@ impl Mode {
     }
 }
 
+/// The vi directions: `h`/`j`/`k`/`l` as left, down, up and right.
+const HJKL: &[(&str, Direction)] = &[
+    ("h", Direction::Left),
+    ("j", Direction::Down),
+    ("k", Direction::Up),
+    ("l", Direction::Right),
+];
+
+/// The direction `key` stands for, if it is one of `h`/`j`/`k`/`l`.
+fn direction_of(key: &str) -> Option<Direction> {
+    HJKL.iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, direction)| *direction)
+}
+
 /// The direction a key resizes toward in [`Mode::Resize`], if it is one of `h`/`j`/`k`/`l`.
 pub fn resize_direction(keystroke: &Keystroke) -> Option<Direction> {
     if keystroke.modifiers.modified() {
         return None;
     }
-    match keystroke.key.as_str() {
-        "h" => Some(Direction::Left),
-        "j" => Some(Direction::Down),
-        "k" => Some(Direction::Up),
-        "l" => Some(Direction::Right),
-        _ => None,
+    direction_of(&keystroke.key)
+}
+
+/// The key a hint-popup row names, as GPUI reports it: a single capital letter stands for
+/// the lower-case key with shift held, anything else is the key itself, unshifted.
+fn key_spec(hint_key: &str) -> (String, bool) {
+    let mut chars = hint_key.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii_uppercase() => (c.to_ascii_lowercase().to_string(), true),
+        _ => (hint_key.to_string(), false),
     }
 }
 
@@ -109,7 +128,9 @@ pub enum LeaderCommand {
 }
 
 impl LeaderCommand {
-    /// Every command, in hint-popup order, with the key that triggers it.
+    /// Every command, in hint-popup order, with the key that triggers it. The key is spelled
+    /// as the hint popup shows it (see [`key_spec`]); this table is the one place a leader key
+    /// is defined.
     pub const ALL: &[(&str, &str, LeaderCommand)] = &[
         ("enter", "split", LeaderCommand::SplitAuto),
         ("s", "split right", LeaderCommand::SplitRight),
@@ -134,23 +155,86 @@ impl LeaderCommand {
         if m.control || m.alt || m.platform || m.function {
             return None;
         }
-        match (keystroke.key.as_str(), m.shift) {
-            ("enter", false) => Some(Self::SplitAuto),
-            ("s", false) => Some(Self::SplitRight),
-            ("v", false) => Some(Self::SplitDown),
-            ("x", false) => Some(Self::ClosePane),
-            ("h", false) => Some(Self::Focus(Direction::Left)),
-            ("j", false) => Some(Self::Focus(Direction::Down)),
-            ("k", false) => Some(Self::Focus(Direction::Up)),
-            ("l", false) => Some(Self::Focus(Direction::Right)),
-            ("h", true) => Some(Self::Swap(Direction::Left)),
-            ("j", true) => Some(Self::Swap(Direction::Down)),
-            ("k", true) => Some(Self::Swap(Direction::Up)),
-            ("l", true) => Some(Self::Swap(Direction::Right)),
-            ("b", false) => Some(Self::FocusSidebar),
-            ("b", true) => Some(Self::ToggleSidebar),
-            ("r", false) => Some(Self::Resize),
-            _ => None,
+        Self::ALL
+            .iter()
+            .find(|(hint_key, _, _)| key_spec(hint_key) == (keystroke.key.clone(), m.shift))
+            .map(|(_, _, command)| *command)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Named imports: `gpui_kit::*` would also bring in GPUI's own `#[test]` macro.
+    use gpui_kit::Keystroke;
+    use lodestar_core::window::Direction;
+
+    use super::{LeaderCommand, direction_of, key_spec, resize_direction};
+
+    fn keystroke(spec: &'static str) -> Keystroke {
+        Keystroke::parse(spec).expect("a valid keystroke")
+    }
+
+    #[test]
+    fn every_hint_row_maps_its_key_to_its_command() {
+        let expected: Vec<(&str, LeaderCommand)> = vec![
+            ("enter", LeaderCommand::SplitAuto),
+            ("s", LeaderCommand::SplitRight),
+            ("v", LeaderCommand::SplitDown),
+            ("x", LeaderCommand::ClosePane),
+            ("h", LeaderCommand::Focus(Direction::Left)),
+            ("j", LeaderCommand::Focus(Direction::Down)),
+            ("k", LeaderCommand::Focus(Direction::Up)),
+            ("l", LeaderCommand::Focus(Direction::Right)),
+            ("shift-h", LeaderCommand::Swap(Direction::Left)),
+            ("shift-j", LeaderCommand::Swap(Direction::Down)),
+            ("shift-k", LeaderCommand::Swap(Direction::Up)),
+            ("shift-l", LeaderCommand::Swap(Direction::Right)),
+            ("b", LeaderCommand::FocusSidebar),
+            ("shift-b", LeaderCommand::ToggleSidebar),
+            ("r", LeaderCommand::Resize),
+        ];
+        assert_eq!(expected.len(), LeaderCommand::ALL.len());
+
+        for (spec, command) in expected {
+            assert_eq!(
+                LeaderCommand::from_keystroke(&keystroke(spec)),
+                Some(command),
+                "{spec}"
+            );
+        }
+    }
+
+    #[test]
+    fn keys_with_other_modifiers_or_unbound_keys_are_not_commands() {
+        for spec in ["ctrl-s", "alt-h", "cmd-x", "shift-s", "q", "escape"] {
+            assert_eq!(
+                LeaderCommand::from_keystroke(&keystroke(spec)),
+                None,
+                "{spec}"
+            );
+        }
+    }
+
+    #[test]
+    fn resize_mode_reads_hjkl_without_modifiers_only() {
+        assert_eq!(resize_direction(&keystroke("h")), Some(Direction::Left));
+        assert_eq!(resize_direction(&keystroke("j")), Some(Direction::Down));
+        assert_eq!(resize_direction(&keystroke("k")), Some(Direction::Up));
+        assert_eq!(resize_direction(&keystroke("l")), Some(Direction::Right));
+        assert_eq!(resize_direction(&keystroke("shift-h")), None);
+        assert_eq!(resize_direction(&keystroke("x")), None);
+    }
+
+    #[test]
+    fn the_focus_and_swap_rows_agree_with_the_hjkl_map() {
+        for (hint_key, _, command) in LeaderCommand::ALL {
+            let (key, _) = key_spec(hint_key);
+            match command {
+                LeaderCommand::Focus(direction) | LeaderCommand::Swap(direction) => {
+                    assert_eq!(direction_of(&key), Some(*direction), "{hint_key}");
+                }
+                _ => assert_eq!(direction_of(&key), None, "{hint_key}"),
+            }
         }
     }
 }
