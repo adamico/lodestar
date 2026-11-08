@@ -683,3 +683,24 @@ mod swap {
         assert_eq!(model.sessions_shown(), vec![SessionId(1)]);
     }
 }
+
+mod drop_session {
+    use super::*;
+    use lodestar_core::window::DropZone;
+
+    /// The launch panes are 800×600 each.
+    const AREA: Size = Size::new(1601.0, 600.0);
+
+    #[test]
+    fn drop_on_the_middle_of_an_empty_pane_shows_the_session_there() {
+        let mut model = WindowModel::new();
+        let right = model.layout(AREA).panes[1].pane;
+
+        model
+            .drop_session(SessionId(1), right, DropZone::Middle, AREA)
+            .expect("a middle drop never changes sizes");
+
+        assert_eq!(model.session_in(right), Some(SessionId(1)));
+        assert_eq!(rects(&model, AREA).len(), 2);
+    }
+}

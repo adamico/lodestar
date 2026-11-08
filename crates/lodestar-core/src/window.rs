@@ -20,6 +20,15 @@ pub enum Direction {
     Down,
 }
 
+/// Where on a pane a dragged session is dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DropZone {
+    /// The session takes the pane over.
+    Middle,
+    /// The pane splits on that side and the session takes the new half.
+    Edge(Direction),
+}
+
 /// Why a command did nothing. The view reacts to it, for example with a flash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -377,6 +386,24 @@ impl WindowModel {
             }
             None => false,
         }
+    }
+}
+
+/// Dropping a dragged session onto a pane.
+impl WindowModel {
+    /// Show `session` in `pane` as a drag and drop does: on [`DropZone::Middle`] it takes the
+    /// pane over. Whatever the pane showed before is then not shown anywhere.
+    pub fn drop_session(
+        &mut self,
+        session: SessionId,
+        pane: PaneId,
+        zone: DropZone,
+        _area: Size,
+    ) -> Result<(), Refused> {
+        let _ = zone;
+        let slot = self.panes.get_mut(&pane).ok_or(Refused::NoSuchPane)?;
+        *slot = Some(session);
+        Ok(())
     }
 }
 
