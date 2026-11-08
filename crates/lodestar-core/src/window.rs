@@ -391,24 +391,33 @@ impl WindowModel {
 
 /// Dropping a dragged session onto a pane.
 impl WindowModel {
-    /// Show `session` in `pane` as a drag and drop does: on [`DropZone::Middle`] it takes the
-    /// pane over. Whatever the pane showed before is then not shown anywhere, and if the
-    /// session was shown in another pane it moves, leaving that pane empty.
+    /// Show `session` where a drag and drop puts it: on [`DropZone::Middle`] it takes `pane`
+    /// over; on an edge, `pane` splits on that side and the session takes the new half, which
+    /// is focused. Whatever the session replaces is then not shown anywhere, and if the session
+    /// was shown in another pane it moves, leaving that pane empty.
+    ///
+    /// An edge drop is refused, changing nothing, when either half would be smaller than
+    /// [`MIN_PANE_SIZE`].
     pub fn drop_session(
         &mut self,
         session: SessionId,
         pane: PaneId,
         zone: DropZone,
-        _area: Size,
+        area: Size,
     ) -> Result<(), Refused> {
-        let _ = zone;
-        if !self.panes.contains_key(&pane) {
-            return Err(Refused::NoSuchPane);
-        }
+        let target = match zone {
+            DropZone::Middle => {
+                if !self.panes.contains_key(&pane) {
+                    return Err(Refused::NoSuchPane);
+                }
+                pane
+            }
+            DropZone::Edge(direction) => self.split(pane, direction, area)?,
+        };
         if let Some(old) = self.pane_showing(session) {
             self.panes.insert(old, None);
         }
-        self.panes.insert(pane, Some(session));
+        self.panes.insert(target, Some(session));
         Ok(())
     }
 }

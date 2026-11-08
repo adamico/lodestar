@@ -739,4 +739,26 @@ mod drop_session {
         assert_eq!(model.sessions_shown(), vec![SessionId(1)]);
         assert_eq!(rects(&model, AREA).len(), 2);
     }
+
+    #[test]
+    fn drop_on_the_right_edge_splits_the_pane_with_the_session_in_the_new_right_half() {
+        let mut model = WindowModel::new();
+        let layout = model.layout(AREA);
+        let (left, right) = (layout.panes[0].pane, layout.panes[1].pane);
+        model.open_session(SessionId(1), right);
+
+        model
+            .drop_session(SessionId(2), right, DropZone::Edge(Direction::Right), AREA)
+            .unwrap();
+
+        let layout = model.layout(AREA);
+        assert_eq!(layout.panes.len(), 3);
+        assert_eq!(layout.panes[0].pane, left);
+        assert_eq!(layout.panes[1].pane, right);
+        assert_eq!(layout.panes[1].rect, Rect::new(801.0, 0.0, 399.5, 600.0));
+        let new_pane = layout.panes[2].pane;
+        assert_eq!(layout.panes[2].rect, Rect::new(1201.5, 0.0, 399.5, 600.0));
+        assert_eq!(model.session_in(right), Some(SessionId(1)));
+        assert_eq!(model.session_in(new_pane), Some(SessionId(2)));
+    }
 }
