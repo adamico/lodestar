@@ -1,6 +1,7 @@
 // The `Action` derive emits `gpui::` paths; the kit is our GPUI.
 extern crate gpui_kit as gpui;
 
+mod claude;
 mod drag_drop;
 mod fixtures;
 mod leader;
