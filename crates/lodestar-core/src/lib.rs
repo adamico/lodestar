@@ -7,4 +7,5 @@ pub mod geometry;
 pub mod picker;
 pub mod session;
 pub mod sidebar;
+pub mod stream;
 pub mod window;
