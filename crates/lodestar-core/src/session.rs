@@ -1,7 +1,10 @@
 //! Sessions, the Projects they work in, and the seam they arrive through.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use crate::turn::{Phase, TurnProgress};
 
 /// Identifies a session for as long as the app runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -186,6 +189,14 @@ pub enum SessionUpdate {
     /// tool call gets a note that no result came, `error` becomes the Transcript's last item
     /// (an Error item), and the session is done.
     Ended { session: SessionId, error: String },
+    /// The running turn moved on: it is now in `phase`, with `output_tokens` written so far
+    /// this turn. Only a session with a turn under way takes it; the turn ends when the
+    /// session waits for input, is done or ends.
+    Progress {
+        session: SessionId,
+        phase: Phase,
+        output_tokens: u64,
+    },
 }
 
 impl SessionUpdate {
@@ -195,7 +206,8 @@ impl SessionUpdate {
             Self::TranscriptItem { session, .. }
             | Self::Status { session, .. }
             | Self::ToolResult { session, .. }
-            | Self::Ended { session, .. } => *session,
+            | Self::Ended { session, .. }
+            | Self::Progress { session, .. } => *session,
         }
     }
 }
@@ -270,6 +282,8 @@ pub struct SessionStore {
     sessions: Vec<Session>,
     /// Most recent first. Starts as the Projects' folders; folders browsed this run join it.
     recent_folders: Vec<PathBuf>,
+    /// How far each running session's current turn has got.
+    turns: HashMap<SessionId, TurnProgress>,
 }
 
 impl SessionStore {
@@ -279,10 +293,17 @@ impl SessionStore {
             .iter()
             .map(|project| project.path.clone())
             .collect();
+        // A turn under way at startup began before the clock did; it counts from zero.
+        let turns = sessions
+            .iter()
+            .filter(|session| session.status == SessionStatus::Running)
+            .map(|session| (session.id, TurnProgress::started_at(Duration::ZERO)))
+            .collect();
         Self {
             projects,
             sessions,
             recent_folders,
+            turns,
         }
     }
 
@@ -346,6 +367,11 @@ impl SessionStore {
         self.sessions.iter().find(|session| session.id == id)
     }
 
+    /// How far `session`'s current turn has got, while it has one.
+    pub fn turn(&self, session: SessionId) -> Option<&TurnProgress> {
+        self.turns.get(&session)
+    }
+
     /// Record `update` on its session: append the item to its Transcript, or move it to the
     /// new status. Whether the session is shown anywhere is not the store's concern; updates
     /// land all the same. Updates for unknown sessions are dropped.
@@ -357,6 +383,9 @@ impl SessionStore {
                 }
             }
             SessionUpdate::Status { session, status } => {
+                if status != SessionStatus::Running {
+                    self.turns.remove(&session);
+                }
                 if let Some(session) = self.session_mut(session) {
                     session.status = status;
                 }
@@ -371,10 +400,21 @@ impl SessionStore {
                 }
             }
             SessionUpdate::Ended { session, error } => {
+                self.turns.remove(&session);
                 if let Some(session) = self.session_mut(session) {
                     session.transcript.end_pending_calls();
                     session.transcript.push(TranscriptItem::Error(error));
                     session.status = SessionStatus::Done;
+                }
+            }
+            SessionUpdate::Progress {
+                session,
+                phase,
+                output_tokens,
+            } => {
+                if let Some(turn) = self.turns.get_mut(&session) {
+                    turn.phase = phase;
+                    turn.output_tokens = output_tokens;
                 }
             }
         }
@@ -392,14 +432,21 @@ impl SessionStore {
         }
     }
 
-    /// Record the user's `text` as sent to `session`: it joins the Transcript at once and the
-    /// session runs until its Agent answers. Carrying the text to the Agent is the caller's
-    /// job, once this succeeds. A refusal leaves the session as it was.
-    pub fn send(&mut self, session: SessionId, text: &str) -> Result<(), SendRefusal> {
+    /// Record the user's `text` as sent to `session` at `now`: it joins the Transcript at once
+    /// and the session runs until its Agent answers, with a turn that starts working at `now`.
+    /// Carrying the text to the Agent is the caller's job, once this succeeds. A refusal
+    /// leaves the session as it was.
+    pub fn send(
+        &mut self,
+        session: SessionId,
+        text: &str,
+        now: Duration,
+    ) -> Result<(), SendRefusal> {
         self.can_send(session)?;
         if text.trim().is_empty() {
             return Err(SendRefusal::Blank);
         }
+        let id = session;
         let session = self
             .session_mut(session)
             .ok_or(SendRefusal::UnknownSession)?;
@@ -407,6 +454,7 @@ impl SessionStore {
             .transcript
             .push(TranscriptItem::User(text.to_owned()));
         session.status = SessionStatus::Running;
+        self.turns.insert(id, TurnProgress::started_at(now));
         Ok(())
     }
 

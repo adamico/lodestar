@@ -558,6 +558,8 @@ mod updates {
 }
 
 mod sending {
+    use std::time::Duration;
+
     use super::new_sessions::Fixtures;
     use lodestar_core::session::{
         ProjectId, SendRefusal, SessionId, SessionStatus, SessionStore, TranscriptItem,
@@ -568,7 +570,7 @@ mod sending {
         let mut store = SessionStore::load(&mut Fixtures);
         let session = store.create_session(ProjectId(1));
 
-        let sent = store.send(session, "Add a README.");
+        let sent = store.send(session, "Add a README.", Duration::ZERO);
 
         assert_eq!(sent, Ok(()));
         let session = store.session(session).unwrap();
@@ -583,9 +585,9 @@ mod sending {
     fn a_running_session_refuses_a_message_and_keeps_its_transcript() {
         let mut store = SessionStore::load(&mut Fixtures);
         let session = store.create_session(ProjectId(1));
-        store.send(session, "First.").unwrap();
+        store.send(session, "First.", Duration::ZERO).unwrap();
 
-        let sent = store.send(session, "Second.");
+        let sent = store.send(session, "Second.", Duration::ZERO);
 
         assert_eq!(sent, Err(SendRefusal::AgentRunning));
         assert_eq!(
@@ -598,7 +600,7 @@ mod sending {
     fn a_done_session_refuses_a_message() {
         let mut store = SessionStore::load(&mut Fixtures);
 
-        let sent = store.send(SessionId(0), "Anyone there?");
+        let sent = store.send(SessionId(0), "Anyone there?", Duration::ZERO);
 
         assert_eq!(sent, Err(SendRefusal::SessionDone));
         assert_eq!(
@@ -612,7 +614,7 @@ mod sending {
         let mut store = SessionStore::load(&mut Fixtures);
         let session = store.create_session(ProjectId(1));
 
-        let sent = store.send(session, "  \n ");
+        let sent = store.send(session, "  \n ", Duration::ZERO);
 
         assert_eq!(sent, Err(SendRefusal::Blank));
         assert!(
@@ -634,7 +636,7 @@ mod sending {
         let mut store = SessionStore::load(&mut Fixtures);
 
         assert_eq!(
-            store.send(SessionId(99), "Hello?"),
+            store.send(SessionId(99), "Hello?", Duration::ZERO),
             Err(SendRefusal::UnknownSession)
         );
     }
@@ -671,5 +673,114 @@ mod sending {
         ] {
             assert!(!refusal.reason().contains('\n'));
         }
+    }
+}
+
+mod turn_progress {
+    use std::time::Duration;
+
+    use super::new_sessions::Fixtures;
+    use lodestar_core::session::{ProjectId, SessionId, SessionStatus, SessionStore, SessionUpdate};
+    use lodestar_core::turn::{Phase, TurnProgress};
+
+    fn running(at: Duration) -> (SessionStore, SessionId) {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+        store.send(session, "Go.", at).unwrap();
+        (store, session)
+    }
+
+    fn progress(session: SessionId, phase: Phase, output_tokens: u64) -> SessionUpdate {
+        SessionUpdate::Progress {
+            session,
+            phase,
+            output_tokens,
+        }
+    }
+
+    #[test]
+    fn progress_moves_the_turn_to_its_phase_and_token_count_but_keeps_its_start() {
+        let (mut store, session) = running(Duration::from_secs(5));
+
+        store.apply(progress(session, Phase::Thinking, 120));
+        store.apply(progress(session, Phase::Tool("Bash".into()), 340));
+
+        assert_eq!(
+            store.turn(session),
+            Some(&TurnProgress {
+                started: Duration::from_secs(5),
+                phase: Phase::Tool("Bash".into()),
+                output_tokens: 340,
+            })
+        );
+    }
+
+    #[test]
+    fn the_turn_is_gone_once_the_session_waits_for_input_or_is_done_or_ended() {
+        let ends = [
+            |session| SessionUpdate::Status {
+                session,
+                status: SessionStatus::WaitingForInput,
+            },
+            |session| SessionUpdate::Status {
+                session,
+                status: SessionStatus::Done,
+            },
+            |session| SessionUpdate::Ended {
+                session,
+                error: "claude exited (code 1).".into(),
+            },
+        ];
+        for end in ends {
+            let (mut store, session) = running(Duration::ZERO);
+
+            store.apply(end(session));
+
+            assert_eq!(store.turn(session), None);
+        }
+    }
+
+    #[test]
+    fn progress_for_a_session_without_a_turn_is_dropped() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+
+        store.apply(progress(session, Phase::Writing, 10));
+
+        assert_eq!(store.turn(session), None);
+    }
+
+    #[test]
+    fn a_session_already_running_at_startup_has_a_turn_from_the_start_of_the_clock() {
+        let store = SessionStore::load(&mut super::OneSession);
+
+        assert_eq!(
+            store.turn(SessionId(0)),
+            Some(&TurnProgress {
+                started: Duration::ZERO,
+                phase: Phase::Working,
+                output_tokens: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn sending_a_message_starts_a_turn_that_is_working_from_that_moment() {
+        let mut store = SessionStore::load(&mut Fixtures);
+        let session = store.create_session(ProjectId(1));
+        assert_eq!(store.turn(session), None);
+
+        store
+            .send(session, "Add a README.", Duration::from_secs(42))
+            .unwrap();
+
+        assert_eq!(
+            store.turn(session),
+            Some(&TurnProgress {
+                started: Duration::from_secs(42),
+                phase: Phase::Working,
+                output_tokens: 0,
+            })
+        );
     }
 }

@@ -113,7 +113,7 @@ impl MainWindow {
             return;
         };
         let text = self.transcripts.input_text(pane, cx);
-        if self.sessions.send(session, &text).is_ok() {
+        if self.sessions.send(session, &text, self.started.elapsed()).is_ok() {
             self.source.send_message(session, &text);
             self.transcripts.clear_input(pane, window, cx);
         }

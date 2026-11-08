@@ -45,6 +45,15 @@ pub struct TurnProgress {
 }
 
 impl TurnProgress {
+    /// A turn that began at `started` and is working, with nothing written yet.
+    pub fn started_at(started: Duration) -> Self {
+        Self {
+            started,
+            phase: Phase::Working,
+            output_tokens: 0,
+        }
+    }
+
     /// The indicator's text at `now`: `55s · 1.5k tokens · Thinking`.
     /// The tokens are left out until there are some.
     pub fn line(&self, now: Duration) -> String {
