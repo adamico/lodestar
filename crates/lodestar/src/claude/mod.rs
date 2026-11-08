@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use lodestar_core::session::{InitialSessions, Project, SessionId, SessionSource, SessionUpdate};
 
-use self::mapper::Event;
+use self::mapper::{Event, TurnTally};
 use self::process::{Agent, AgentEvent};
 
 pub mod mapper;
@@ -26,6 +26,8 @@ pub struct ClaudeSource {
     /// Claude Code's own id for each session, from its first `system`/`init` line. The spec
     /// asks for it to be recorded: it is what ties a Lodestar session to Claude Code's.
     claude_session_ids: HashMap<SessionId, String>,
+    /// How far each session's current turn has got, for the working indicator.
+    tallies: HashMap<SessionId, TurnTally>,
 }
 
 impl ClaudeSource {
@@ -35,6 +37,7 @@ impl ClaudeSource {
             program,
             agents: HashMap::new(),
             claude_session_ids: HashMap::new(),
+            tallies: HashMap::new(),
         }
     }
 
@@ -61,10 +64,17 @@ impl ClaudeSource {
                         .entry(session)
                         .or_insert_with(|| claude_session_id.clone());
                 }
-                mapper::updates_for(session, &event)
+                let tally = self.tallies.entry(session).or_default();
+                let (next, progress) = tally.next(session, &event);
+                *tally = next;
+                progress
+                    .into_iter()
+                    .chain(mapper::updates_for(session, &event))
+                    .collect()
             }
             AgentEvent::Exited(exit) => {
                 self.agents.remove(&session);
+                self.tallies.remove(&session);
                 vec![SessionUpdate::Ended {
                     session,
                     error: exit.describe(&self.program_name()),
@@ -129,6 +139,7 @@ impl SessionSource for ClaudeSource {
     /// Kill every Agent (dropping one kills it) and forget what they had to say.
     fn shutdown(&mut self) {
         self.agents.clear();
+        self.tallies.clear();
     }
 }
 
@@ -470,6 +481,68 @@ mod tests {
                 session: SessionId(3),
                 error: "claude exited (code 2).".into()
             }]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_is_asked_for_partial_messages_and_its_turn_reports_progress_between_items() {
+        const THINKING_TOOL: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/stream-json/thinking-tool.jsonl"
+        );
+        let args = fake_dir("progress").join("args");
+        let project = fake_claude_doing(
+            "progress",
+            &format!(
+                "printf '%s\\n' \"$@\" > '{}'\ncat '{THINKING_TOOL}'\ncat > /dev/null\n",
+                args.display()
+            ),
+        );
+        let mut source = fake_source();
+
+        source.start_agent(SessionId(3), &project).unwrap();
+        let updates = poll_until_waiting(&mut source);
+
+        let args = fs::read_to_string(&args).unwrap();
+        assert!(
+            args.lines().any(|arg| arg == "--include-partial-messages"),
+            "{args}"
+        );
+        let kinds: Vec<String> = updates
+            .iter()
+            .map(|update| match update {
+                SessionUpdate::Status { status, .. } => format!("{status:?}"),
+                SessionUpdate::TranscriptItem { item, .. } => match item {
+                    TranscriptItem::ToolCall(call) => format!("call {}", call.name),
+                    TranscriptItem::Assistant(_) => "text".into(),
+                    other => format!("{other:?}"),
+                },
+                SessionUpdate::ToolResult { .. } => "result".into(),
+                SessionUpdate::Progress {
+                    phase,
+                    output_tokens,
+                    ..
+                } => format!("{} {output_tokens}", phase.label()),
+                SessionUpdate::Ended { .. } => "ended".into(),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "Running",
+                "Working 7",
+                "Thinking 7",
+                "Running Bash 7",
+                "call Bash",
+                "Running Bash 113",
+                "result",
+                "Working 113",
+                "Working 137",
+                "Writing 137",
+                "text",
+                "WaitingForInput",
+            ]
         );
     }
 }

@@ -11,15 +11,17 @@ use std::time::{Duration, Instant};
 use lodestar_core::session::SessionId;
 
 /// The flags every Agent starts with. `-p` with stream-json in and out keeps the process
-/// alive for as long as stdin is open; `--verbose` makes it emit every event; the permission
-/// mode is ADR 0003's.
-const ARGS: [&str; 8] = [
+/// alive for as long as stdin is open; `--verbose` makes it emit every event;
+/// `--include-partial-messages` adds the partial messages that drive the working indicator;
+/// the permission mode is ADR 0003's.
+const ARGS: [&str; 9] = [
     "-p",
     "--input-format",
     "stream-json",
     "--output-format",
     "stream-json",
     "--verbose",
+    "--include-partial-messages",
     "--permission-mode",
     "acceptEdits",
 ];

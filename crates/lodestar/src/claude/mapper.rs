@@ -4,14 +4,17 @@
 //! carries what the Agent said and the tools it called, `user` carries those tools' results
 //! (a refused tool's result is an error that says so, so `system`/`permission_denied`, which
 //! repeats it, is ignored), and `result` closes the turn, with an Error item when the turn
-//! failed. Everything else (progress blurbs, rate-limit notes, partial messages, lines that are not
-//! JSON) is ignored without complaint, because Claude Code adds event kinds freely and a
-//! stray line must never take the session down.
+//! failed. Partial messages (`stream_event`, and `system`/`status` while requesting) only move
+//! the working indicator, through a [`TurnTally`]; whole items still come from `assistant`.
+//! Everything else (progress blurbs, rate-limit notes, lines that are not JSON) is ignored
+//! without complaint, because Claude Code adds event kinds freely and a stray line must never
+//! take the session down.
 //!
 //! A tool call and its result are two lines linked by the tool_use id, so a call becomes a
 //! pending `ToolCall` item and its result a `SessionUpdate::ToolResult` (ADR 0002).
 
 use lodestar_core::session::{SessionId, SessionStatus, SessionUpdate, ToolCall, TranscriptItem};
+use lodestar_core::turn::Phase;
 use serde_json::{Map, Value};
 
 /// One stream-json line, reduced to what Lodestar reacts to.
@@ -26,6 +29,8 @@ pub enum Event {
     /// The turn ended, with why it failed when it did. The Agent is alive either way and can
     /// take another message.
     Result { error: Option<String> },
+    /// A partial message: how far the API message being written has got.
+    Partial(Partial),
     /// A line Lodestar does not react to.
     Ignored,
 }
@@ -39,6 +44,21 @@ pub enum AssistantBlock {
         name: String,
         input: Value,
     },
+}
+
+/// One partial-message line, as far as the working indicator cares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Partial {
+    /// Claude Code is sending a request to the API.
+    Requesting,
+    /// An API message began, with what it has written so far.
+    MessageStart { output_tokens: u64 },
+    /// A content block began: thinking, text or a tool call.
+    BlockStart(Phase),
+    /// The API message's running output token count.
+    MessageDelta { output_tokens: u64 },
+    /// The API message is complete.
+    MessageStop,
 }
 
 /// Read one line of stream-json. Never fails: what cannot be read is [`Event::Ignored`].
@@ -90,7 +110,90 @@ pub fn parse_line(line: &str) -> Event {
         Some("result") => Event::Result {
             error: turn_error(&value),
         },
+        Some("system") if value["subtype"] == "status" && value["status"] == "requesting" => {
+            Event::Partial(Partial::Requesting)
+        }
+        Some("stream_event") if value["parent_tool_use_id"].is_null() => {
+            partial(&value["event"]).map_or(Event::Ignored, Event::Partial)
+        }
         _ => Event::Ignored,
+    }
+}
+
+/// What a `stream_event`'s `event` says about progress, if anything.
+fn partial(event: &Value) -> Option<Partial> {
+    match event["type"].as_str()? {
+        "message_start" => Some(Partial::MessageStart {
+            output_tokens: event["message"]["usage"]["output_tokens"].as_u64()?,
+        }),
+        "content_block_start" => {
+            let block = &event["content_block"];
+            let phase = match block["type"].as_str()? {
+                "thinking" | "redacted_thinking" => Phase::Thinking,
+                "text" => Phase::Writing,
+                "tool_use" | "server_tool_use" => Phase::Tool(block["name"].as_str()?.to_owned()),
+                _ => return None,
+            };
+            Some(Partial::BlockStart(phase))
+        }
+        "message_delta" => Some(Partial::MessageDelta {
+            output_tokens: event["usage"]["output_tokens"].as_u64()?,
+        }),
+        "message_stop" => Some(Partial::MessageStop),
+        _ => None,
+    }
+}
+
+/// What a turn has done so far, folded over its partial messages: its phase, and its output
+/// tokens. Each API message reports a running count of its own, so the turn's total is the
+/// finished messages' tokens plus the current one's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnTally {
+    phase: Phase,
+    finished_tokens: u64,
+    message_tokens: u64,
+}
+
+impl Default for TurnTally {
+    fn default() -> Self {
+        Self {
+            phase: Phase::Working,
+            finished_tokens: 0,
+            message_tokens: 0,
+        }
+    }
+}
+
+impl TurnTally {
+    /// The tally after `event`, and the Progress update for `session` when the phase or the
+    /// token count changed. A turn's start and end begin a fresh tally.
+    pub fn next(&self, session: SessionId, event: &Event) -> (TurnTally, Option<SessionUpdate>) {
+        let mut next = self.clone();
+        match event {
+            Event::Init { .. } | Event::Result { .. } => return (TurnTally::default(), None),
+            Event::Partial(Partial::Requesting) => next.phase = Phase::Working,
+            Event::Partial(Partial::MessageStart { output_tokens })
+            | Event::Partial(Partial::MessageDelta { output_tokens }) => {
+                next.message_tokens = *output_tokens
+            }
+            Event::Partial(Partial::BlockStart(phase)) => next.phase = phase.clone(),
+            Event::Partial(Partial::MessageStop) => {
+                next.finished_tokens += next.message_tokens;
+                next.message_tokens = 0;
+            }
+            _ => {}
+        }
+        let changed = next.phase != self.phase || next.output_tokens() != self.output_tokens();
+        let update = changed.then(|| SessionUpdate::Progress {
+            session,
+            phase: next.phase.clone(),
+            output_tokens: next.output_tokens(),
+        });
+        (next, update)
+    }
+
+    fn output_tokens(&self) -> u64 {
+        self.finished_tokens + self.message_tokens
     }
 }
 
@@ -235,7 +338,7 @@ pub fn updates_for(session: SessionId, event: &Event) -> Vec<SessionUpdate> {
                 status: SessionStatus::WaitingForInput,
             }])
             .collect(),
-        Event::Ignored => Vec::new(),
+        Event::Partial(_) | Event::Ignored => Vec::new(),
     }
 }
 
@@ -250,6 +353,7 @@ mod tests {
     use lodestar_core::session::{
         SessionId, SessionStatus, SessionStore, SessionUpdate, ToolCall, TranscriptItem,
     };
+    use lodestar_core::turn::Phase;
 
     use super::*;
 
@@ -259,6 +363,11 @@ mod tests {
     const TOOL_DENIED: &str = include_str!("../../fixtures/stream-json/tool-denied.jsonl");
     const PARTIAL_MESSAGES: &str =
         include_str!("../../fixtures/stream-json/partial-messages.jsonl");
+    /// Sonnet with `--effort high`, `--settings '{"alwaysThinkingEnabled":true}'`,
+    /// `--allowedTools Bash` and `--include-partial-messages`, asked to think about whether
+    /// 391 is prime, run `echo hi` and answer: one API message that thinks then calls Bash
+    /// (113 output tokens), then one that writes the answer (24).
+    const THINKING_TOOL: &str = include_str!("../../fixtures/stream-json/thinking-tool.jsonl");
 
     fn mapped(recording: &str) -> Vec<SessionUpdate> {
         recording
@@ -525,6 +634,57 @@ mod tests {
             Event::Init {
                 claude_session_id: "e25be59c-9c60-4c20-a69b-1a7ecc1ebaf4".into()
             }
+        );
+    }
+
+    /// The Progress updates a turn's lines make, folding one tally over them as the source does.
+    fn progress_through(recording: &str) -> Vec<SessionUpdate> {
+        let mut tally = TurnTally::default();
+        let mut updates = Vec::new();
+        for line in recording.lines() {
+            let (next, update) = tally.next(SessionId(7), &parse_line(line));
+            tally = next;
+            updates.extend(update);
+        }
+        updates
+    }
+
+    fn progress(phase: Phase, output_tokens: u64) -> SessionUpdate {
+        SessionUpdate::Progress {
+            session: SessionId(7),
+            phase,
+            output_tokens,
+        }
+    }
+
+    #[test]
+    fn a_turn_reports_each_phase_and_sums_output_tokens_across_its_api_messages() {
+        assert_eq!(
+            progress_through(THINKING_TOOL),
+            [
+                progress(Phase::Working, 7),
+                progress(Phase::Thinking, 7),
+                progress(Phase::Tool("Bash".into()), 7),
+                progress(Phase::Tool("Bash".into()), 113),
+                progress(Phase::Working, 113),
+                progress(Phase::Working, 137),
+                progress(Phase::Writing, 137),
+            ]
+        );
+    }
+
+    #[test]
+    fn partial_messages_drive_progress_but_add_no_transcript_items() {
+        assert_eq!(
+            mapped(THINKING_TOOL)
+                .iter()
+                .filter(|update| matches!(update, SessionUpdate::TranscriptItem { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            progress_through(PARTIAL_MESSAGES),
+            [progress(Phase::Working, 7), progress(Phase::Writing, 7)]
         );
     }
 }
